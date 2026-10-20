@@ -2,9 +2,11 @@
 //! name is mapped here, and all of it goes when the last handle drops
 //! (docs/reference/library.md, "Sessions and memory").
 //!
-//! A released range is not given back to the address space: it becomes an
-//! inaccessible reservation, so a `Word` kept past its session faults on
-//! first use instead of reading whatever the next session put there.
+//! By default a released range is not given back to the address space: it
+//! becomes an inaccessible reservation, so a `Word` kept past its session
+//! faults on first use instead of reading whatever the next session put
+//! there. A host that keeps no `Word` past its session can have the ranges
+//! unmapped instead (`Release::Unmap`).
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicPtr, Ordering};
@@ -15,6 +17,18 @@ use crate::sys::vm;
 
 /// Name bytes come from blocks of this size; a longer name gets its own.
 const NAME_BLOCK: usize = 1 << 20;
+
+/// What a released session does with its memory.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Release {
+    /// Keep the ranges reserved and inaccessible, so a `Word` used after
+    /// its session stops the process with a message.
+    #[default]
+    Revoke,
+    /// Unmap the ranges. A `Word` used after its session then reads
+    /// whatever is mapped there later.
+    Unmap,
+}
 
 #[derive(Default)]
 pub struct Heap {
@@ -31,6 +45,7 @@ struct Inner {
     end: usize,
     /// Bytes mapped: arena chunks and name blocks.
     bytes: usize,
+    release: Release,
 }
 
 impl Heap {
@@ -44,6 +59,11 @@ impl Heap {
     /// Bytes mapped for this session so far: arena chunks and name blocks.
     pub fn bytes(&self) -> usize {
         self.inner.lock().unwrap().bytes
+    }
+
+    /// Sets what happens to the memory when the heap is released.
+    pub fn set_release(&self, r: Release) {
+        self.inner.lock().unwrap().release = r;
     }
 
     /// `len` bytes at alignment 8 that live as long as the session.
@@ -103,6 +123,16 @@ impl Drop for Heap {
         if chunks.is_empty() {
             return;
         }
+        if inner.release == Release::Unmap {
+            for (base, len) in chunks {
+                #[cfg(test)]
+                tests::UNMAPPED.with(|u| u.set(u.get() + len));
+                // SAFETY: the range is a mapping this heap owns, and the host
+                // that chose `Unmap` keeps no reference into it.
+                unsafe { vm::unmap(base as *mut u8, len) };
+            }
+            return;
+        }
         fiber::install_fault_handler();
         for (base, len) in chunks {
             tombstone(base, len);
@@ -160,8 +190,14 @@ pub(crate) fn is_released(addr: usize) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+    use std::cell::Cell;
+
+    thread_local! {
+        /// Bytes this thread's dropped heaps unmapped.
+        pub(crate) static UNMAPPED: Cell<usize> = const { Cell::new(0) };
+    }
 
     #[test]
     fn release_tombstones_every_chunk() {
@@ -175,5 +211,16 @@ mod tests {
         drop(h);
         assert!(is_released(at));
         assert!(is_released(big as usize + (2 << 20)));
+    }
+
+    #[test]
+    fn an_unmapped_release_leaves_no_reservation() {
+        let h = Heap::default();
+        h.set_release(Release::Unmap);
+        let at = h.alloc_bytes(b"outPath").as_ptr() as usize;
+        let before = UNMAPPED.with(|u| u.get());
+        drop(h);
+        assert!(!is_released(at));
+        assert_eq!(UNMAPPED.with(|u| u.get()) - before, NAME_BLOCK);
     }
 }
