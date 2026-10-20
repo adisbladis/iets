@@ -224,6 +224,13 @@ pub struct WellKnown {
 
 /// Clone gives a fiber its own evaluator: shared tables by handle, a
 /// fresh arena, private counters (see docs/explanation/evaluation.md).
+///
+/// An evaluator stays on the thread that built it:
+///
+/// ```compile_fail
+/// fn send<T: Send>() {}
+/// send::<iets::eval::Evaluator>();
+/// ```
 #[derive(Clone)]
 pub struct Evaluator {
     pub(crate) arena: Arena,
