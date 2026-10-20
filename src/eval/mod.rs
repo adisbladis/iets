@@ -11,7 +11,7 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::from_utf8;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use std::{fs, mem, ptr};
 
@@ -405,6 +405,18 @@ macro_rules! bail {
 use crate::sys;
 pub(crate) use bail;
 
+/// Leaks each distinct `system` once per process, not once per evaluator.
+fn static_system(system: &str) -> &'static str {
+    static SEEN: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+    let mut seen = SEEN.lock().unwrap();
+    if let Some(s) = seen.iter().find(|s| **s == system) {
+        return s;
+    }
+    let s: &'static str = Box::leak(system.into());
+    seen.push(s);
+    s
+}
+
 /// Everything fixed before evaluation starts. A field set after `try_run` clones
 /// the evaluator is one fiber's alone, so there is no setter (docs/explanation/evaluation.md).
 ///
@@ -469,7 +481,7 @@ impl EvalConfig {
 
     pub fn system(mut self, system: &str) -> EvalConfig {
         if system != self.system {
-            self.system = Box::leak(system.into());
+            self.system = static_system(system);
         }
         self
     }
