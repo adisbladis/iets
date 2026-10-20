@@ -1,9 +1,10 @@
 //! List primops.
 
 use super::Registry;
-use crate::eval::{ErrorKind, EvalResult, Evaluator, Pos, bail};
+use crate::eval::{Error, ErrorKind, EvalResult, Evaluator, Pos, bail};
 use crate::parallel;
 use crate::runtime::arena::Stat;
+use crate::runtime::value::ThunkAppObj;
 use crate::runtime::{Arena, Value, Word};
 
 pub fn register(r: &mut Registry) {
@@ -236,8 +237,13 @@ fn gen_list(ev: &mut Evaluator, args: &[Word], pos: Pos) -> EvalResult<Word> {
     if n < 0 {
         bail!(ErrorKind::Eval, pos, "cannot create list of size {}", n);
     }
-    if Arena::list_bytes(n as usize).is_none() {
+    let Some(bytes) = Arena::list_bytes(n as usize) else {
         bail!(ErrorKind::Eval, pos, "out of memory");
+    };
+    // asked up front: filling the list makes no call a refusal could stop
+    let thunks = n as usize * size_of::<ThunkAppObj>();
+    if !ev.arena.may_grow(bytes + thunks) {
+        return Err(Error::budget(pos));
     }
     let f = ev.force_function(
         args[0],

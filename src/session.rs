@@ -153,12 +153,13 @@ mod tests {
     use super::*;
 
     use crate::api::{self, EvalArgs, Input};
-    use crate::eval::{EvalConfig, Evaluator, Pos};
+    use crate::eval::{ErrorKind, EvalConfig, Evaluator, Pos};
     use crate::runtime::Word;
-    use crate::runtime::heap::is_released;
+    use crate::runtime::heap::{MemoryGroup, MemoryHost, Release, is_released};
     use crate::{parallel, print};
     use std::env;
     use std::process::{self, Command};
+    use std::sync::atomic::AtomicUsize;
 
     use crate::log;
 
@@ -236,6 +237,98 @@ mod tests {
         assert!(!is_released(at));
         drop(s);
         assert!(is_released(at));
+    }
+
+    /// Allows up to `limit` bytes; a test changes the limit as it goes.
+    struct Limit(Arc<AtomicUsize>);
+
+    impl MemoryHost for Limit {
+        fn allow(&self, total: usize) -> bool {
+            total <= self.0.load(Ordering::Relaxed)
+        }
+    }
+
+    fn evaluate(ev: &mut Evaluator, expr: &str) -> Result<Word, ErrorKind> {
+        let a = EvalArgs {
+            input: Some(Input::Expr(expr.into())),
+            no_ir_cache: true,
+            no_tracing_cache: true,
+            workers: 1,
+            ..EvalArgs::new()
+        };
+        api::evaluate(ev, a).map_err(|e| e.kind)
+    }
+
+    #[test]
+    fn a_refused_chunk_fails_the_evaluation_and_the_session_goes_on() {
+        let limit = Arc::new(AtomicUsize::new(usize::MAX));
+        let group = MemoryGroup::new(Limit(limit.clone()));
+        let s = Session::new();
+        s.heap.join(&group);
+        let mut ev = EvalConfig::new().session(s.clone()).build();
+        let held = group.bytes();
+        assert_eq!(held, s.heap.bytes());
+        limit.store(held + (40 << 20), Ordering::Relaxed);
+        // each step copies the list and is a call
+        let grow = "builtins.foldl' (acc: i: acc ++ [ i ]) [ ] (builtins.genList (x: x) 20000)";
+        let deep = format!("builtins.length ({grow})");
+        assert_eq!(evaluate(&mut ev, &deep).err(), Some(ErrorKind::Budget));
+        let tried = format!("(builtins.tryEval ({deep})).success");
+        assert_eq!(evaluate(&mut ev, &tried).err(), Some(ErrorKind::Budget));
+        // genList refuses before it allocates
+        let before = group.bytes();
+        let big = "builtins.length (builtins.genList (x: x) 100000000)";
+        assert_eq!(evaluate(&mut ev, big).err(), Some(ErrorKind::Budget));
+        assert!(group.bytes() - before <= 32 << 20);
+        // once the host allows the size again, the evaluator goes on
+        limit.store(usize::MAX, Ordering::Relaxed);
+        let w = evaluate(&mut ev, "(x: x + 1) 1").expect("evaluates");
+        assert_eq!(json(&mut ev, w), "2");
+        drop(ev);
+        drop(s);
+        assert_eq!(group.bytes(), 0);
+    }
+
+    /// Helper fibers have arenas of their own: a refusal in any of them
+    /// ends the run with the budget error and does not hang it.
+    #[test]
+    fn a_refusal_ends_a_parallel_run() {
+        let limit = Arc::new(AtomicUsize::new(usize::MAX));
+        let group = MemoryGroup::new(Limit(limit.clone()));
+        let s = Session::new();
+        s.heap.join(&group);
+        let ev = EvalConfig::new().session(s.clone()).build();
+        limit.store(group.bytes() + (64 << 20), Ordering::Relaxed);
+        let grow = "builtins.foldl' (acc: i: acc ++ [ i ]) [ ] (builtins.genList (x: x) 3000)";
+        let expr = format!("builtins.deepSeq (builtins.genList (i: {grow}) 64) 0");
+        let kind = parallel::try_run(4, ev, |ev| {
+            let a = EvalArgs {
+                input: Some(Input::Expr(expr)),
+                no_ir_cache: true,
+                no_tracing_cache: true,
+                ..EvalArgs::new()
+            };
+            api::evaluate(ev, a).err().map(|e| e.kind)
+        })
+        .expect("runs");
+        assert_eq!(kind, Some(ErrorKind::Budget));
+    }
+
+    #[test]
+    fn a_group_returns_to_nothing_after_each_released_session() {
+        let group = MemoryGroup::new(Limit(Arc::new(AtomicUsize::new(usize::MAX))));
+        for _ in 0..8 {
+            let s = Session::new();
+            s.heap.join(&group);
+            s.heap.set_release(Release::Unmap);
+            let (ev, w) = eval_in(&s, EXPR);
+            let at = w.bits() as usize & 0xffff_ffff_fff8;
+            assert!(group.bytes() >= s.heap.bytes() && s.heap.bytes() > 0);
+            drop(ev);
+            drop(s);
+            assert_eq!(group.bytes(), 0);
+            assert!(!is_released(at));
+        }
     }
 
     /// The child process uses a value of a released session; the parent
