@@ -20,25 +20,32 @@ struct Slot {
     answer: OnceLock<BTreeSet<StorePath>>,
 }
 
-/// What the store answered for a path, kept for the life of the process: the
+/// What the store answered for a path, kept for the life of a session: the
 /// references of a valid store path never change.
-static REFERENCES: Mutex<Option<HashMap<String, Arc<Slot>>>> = Mutex::new(None);
+#[derive(Default)]
+pub(crate) struct References {
+    slots: Mutex<HashMap<String, Arc<Slot>>>,
+    /// The queries [`prefetch_references`] started.
+    started: AtomicUsize,
+}
 
-fn slot(full: &str) -> (Arc<Slot>, bool) {
-    let mut kept = REFERENCES.lock().expect("references cache");
-    let table = kept.get_or_insert_with(HashMap::new);
-    match table.entry(full.to_string()) {
-        Entry::Occupied(e) => (e.get().clone(), false),
-        Entry::Vacant(e) => (e.insert(Arc::default()).clone(), true),
+impl References {
+    fn slot(&self, full: &str) -> (Arc<Slot>, bool) {
+        let mut table = self.slots.lock().expect("references cache");
+        match table.entry(full.to_string()) {
+            Entry::Occupied(e) => (e.get().clone(), false),
+            Entry::Vacant(e) => (e.insert(Arc::default()).clone(), true),
+        }
     }
 }
 
 /// The references the local store holds for `path`, empty when it cannot
 /// answer. primops.cc:addPath needs them for a store path it is given with a
-/// context, and swallows `queryPathInfo`'s error the same way.
-pub fn references_of(path: &StorePath) -> BTreeSet<StorePath> {
+/// context, and swallows `queryPathInfo`'s error the same way. The answer
+/// is cached in `session`: a valid path's references never change.
+pub fn references_of(session: &Session, path: &StorePath) -> BTreeSet<StorePath> {
     let full = path.to_string();
-    let (s, _) = slot(&full);
+    let (s, _) = session.store_refs.slot(&full);
     // a failed prefetch queries again
     s.answer
         .get_or_init(|| {
@@ -53,13 +60,13 @@ const MAX_PREFETCH: usize = 8;
 
 /// Starts `references_of(path)` on a thread.
 pub fn prefetch_references(path: StorePath, session: Arc<Session>) {
-    static STARTED: AtomicUsize = AtomicUsize::new(0);
-    if STARTED.load(Ordering::Relaxed) >= MAX_PREFETCH {
+    let refs = &session.store_refs;
+    if refs.started.load(Ordering::Relaxed) >= MAX_PREFETCH {
         return;
     }
     let full = path.to_string();
-    let (s, new) = slot(&full);
-    if new && STARTED.fetch_add(1, Ordering::Relaxed) < MAX_PREFETCH {
+    let (s, new) = refs.slot(&full);
+    if new && refs.started.fetch_add(1, Ordering::Relaxed) < MAX_PREFETCH {
         thread::spawn(move || {
             let _entered = session.enter();
             s.prefetched.get_or_init(|| query_references(&full));
