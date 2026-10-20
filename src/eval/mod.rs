@@ -1721,19 +1721,34 @@ impl Evaluator {
     #[inline]
     pub(crate) fn enter_call(&mut self, pos: Pos) -> EvalResult<()> {
         self.call_depth += 1;
-        if self.call_depth > MAX_CALL_DEPTH {
-            self.call_depth -= 1;
-            return Err(Error::stack_overflow(pos));
+        if self.call_depth > self.arena.call_limit {
+            return self.call_refused(pos);
         }
         Ok(())
     }
 
+    /// The depth passed `arena.call_limit`: a stack overflow, or a refused
+    /// chunk. After a refusal the call goes on if the host now allows it.
+    #[cold]
+    fn call_refused(&mut self, pos: Pos) -> EvalResult<()> {
+        if self.call_depth <= MAX_CALL_DEPTH && self.arena.allowed_again() {
+            return Ok(());
+        }
+        self.call_depth -= 1;
+        Err(if self.call_depth < MAX_CALL_DEPTH {
+            Error::budget(pos)
+        } else {
+            Error::stack_overflow(pos)
+        })
+    }
+
     /// Apply `func` to `args` left to right. Returns a forced value.
-    /// `call_limit` is the depth limit, or 0 in a profiled run, so one
-    /// compare serves both and the shadow stack costs a run without a
-    /// profile nothing.
+    /// `call_limit` is the depth limit, or 0 in a profiled run, and the
+    /// arena's is 0 once the memory host refused a chunk, so one compare
+    /// against the lower serves all three and the shadow stack costs a run
+    /// without a profile nothing.
     pub fn apply(&mut self, func: Word, args: &[Word], pos: Pos) -> EvalResult<Word> {
-        if self.call_depth >= self.call_limit {
+        if self.call_depth >= self.call_limit.min(self.arena.call_limit) {
             return self.apply_slow(func, args, pos);
         }
         self.call_depth += 1;
@@ -1742,8 +1757,8 @@ impl Evaluator {
         r
     }
 
-    /// A call at the depth limit, which fails, or of a profiled run, with
-    /// the frames of the shadow stack.
+    /// A call at the depth limit, which fails, after a refused chunk, or of
+    /// a profiled run, with the frames of the shadow stack.
     #[inline(never)]
     fn apply_slow(&mut self, func: Word, args: &[Word], pos: Pos) -> EvalResult<Word> {
         self.enter_call(pos)?;

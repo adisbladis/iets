@@ -42,6 +42,9 @@ pub enum ErrorKind {
     Lint,
     /// A fetched tree whose hash is not the one the lock or the call named.
     HashMismatch,
+    /// The session's `MemoryHost` refused more memory. Never caught by
+    /// `tryEval`.
+    Budget,
 }
 
 impl ErrorKind {
@@ -63,6 +66,7 @@ impl ErrorKind {
             ErrorKind::Unsupported => "unsupported",
             ErrorKind::Lint => "lint",
             ErrorKind::HashMismatch => "hash-mismatch",
+            ErrorKind::Budget => "budget",
         }
     }
 }
@@ -109,6 +113,11 @@ impl Error {
             "stack overflow; max-call-depth exceeded",
             pos,
         )
+    }
+
+    /// The memory host refused the chunk this evaluation asked for.
+    pub fn budget(pos: Pos) -> Box<Error> {
+        Error::boxed(ErrorKind::Budget, "memory budget exceeded", pos)
     }
 
     /// A tree that hashes to `got`, not to what the call or the lock named;
