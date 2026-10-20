@@ -40,6 +40,10 @@ pub trait MemoryHost: Send + Sync {
     /// thread with no lock held. On `false` the chunk is still mapped, and
     /// the evaluation fails at its next call with `ErrorKind::Budget`.
     fn allow(&self, total: usize) -> bool;
+
+    /// Called when a mapping fails, before iets tries once more. If that
+    /// fails too, the process exits with `out of memory`.
+    fn release(&self) {}
 }
 
 /// Sessions whose bytes count against one `MemoryHost` (`Heap::join`).
@@ -109,6 +113,24 @@ impl Heap {
         group.is_none_or(|g| g.host.allow(g.bytes().saturating_add(extra)))
     }
 
+    /// Maps `len` bytes, retrying once after `MemoryHost::release`.
+    pub(crate) fn map(&self, len: usize) -> usize {
+        if let Some(p) = try_map(len) {
+            return p;
+        }
+        let group = self.inner.lock().unwrap().group.clone();
+        if let Some(g) = group {
+            g.host.release();
+        }
+        let Some(p) = try_map(len) else {
+            // no unwinding: other fibers hold arena pointers, and Nix ends
+            // the same way on a heap it cannot grow
+            errln!("error: out of memory");
+            process::exit(1);
+        };
+        p
+    }
+
     /// Bytes mapped for this session so far: arena chunks and name blocks.
     pub fn bytes(&self) -> usize {
         self.inner.lock().unwrap().bytes
@@ -145,7 +167,7 @@ impl Heap {
         let size = NAME_BLOCK.max(len.next_multiple_of(vm::page_size()));
         // a name block is small; the arena reports refusals
         self.grow(size);
-        let p = map(size);
+        let p = self.map(size);
         let mut g = self.inner.lock().unwrap();
         g.chunks.push((p, size));
         if size > NAME_BLOCK {
@@ -177,12 +199,13 @@ impl Heap {
     }
 }
 
-fn map(len: usize) -> usize {
-    let Ok(p) = vm::map(len, false) else {
-        errln!("error: out of memory");
-        process::exit(1);
-    };
-    p as usize
+/// An anonymous mapping of `len` bytes, or `None` when there is no memory.
+fn try_map(len: usize) -> Option<usize> {
+    #[cfg(test)]
+    if tests::FAIL_NEXT_MAP.with(|f| f.replace(false)) {
+        return None;
+    }
+    vm::map(len, false).ok().map(|p| p as usize)
 }
 
 impl Drop for Heap {
@@ -268,6 +291,8 @@ pub(crate) mod tests {
     use std::cell::Cell;
 
     thread_local! {
+        /// Makes this thread's next `try_map` fail.
+        pub(crate) static FAIL_NEXT_MAP: Cell<bool> = const { Cell::new(false) };
         /// Bytes this thread's dropped heaps unmapped.
         pub(crate) static UNMAPPED: Cell<usize> = const { Cell::new(0) };
     }
@@ -297,22 +322,34 @@ pub(crate) mod tests {
         assert_eq!(UNMAPPED.with(|u| u.get()) - before, NAME_BLOCK);
     }
 
-    /// Allows up to `limit` bytes.
+    /// Allows up to `limit` bytes and counts the calls to `release`.
     pub(crate) struct Limit {
         pub(crate) limit: usize,
+        pub(crate) released: Arc<AtomicUsize>,
     }
 
     impl MemoryHost for Limit {
         fn allow(&self, total: usize) -> bool {
             total <= self.limit
         }
+
+        fn release(&self) {
+            self.released.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    pub(crate) fn limit(limit: usize) -> (Arc<MemoryGroup>, Arc<AtomicUsize>) {
+        let released = Arc::new(AtomicUsize::new(0));
+        let g = MemoryGroup::new(Limit {
+            limit,
+            released: released.clone(),
+        });
+        (g, released)
     }
 
     #[test]
     fn a_group_counts_its_heaps_and_its_host_decides() {
-        let g = MemoryGroup::new(Limit {
-            limit: 3 * NAME_BLOCK,
-        });
+        let (g, _) = limit(3 * NAME_BLOCK);
         let a = Heap::default();
         a.alloc(8);
         a.join(&g);
@@ -328,5 +365,16 @@ pub(crate) mod tests {
         assert!(a.may_grow(NAME_BLOCK));
         drop(a);
         assert_eq!(g.bytes(), 0);
+    }
+
+    #[test]
+    fn a_failed_mapping_asks_the_host_to_release_and_maps_again() {
+        let (g, released) = limit(usize::MAX);
+        let h = Heap::default();
+        h.join(&g);
+        FAIL_NEXT_MAP.with(|f| f.set(true));
+        let p = h.alloc_bytes(b"outPath");
+        assert_eq!(p, b"outPath");
+        assert_eq!(released.load(Ordering::Relaxed), 1);
     }
 }
