@@ -144,6 +144,7 @@ block a session of the group maps, with the group's total in bytes:
 | Call | When | What the answer does |
 |:---|:---|:---|
 | `allow(total)` | before every new chunk, on the evaluating thread, with no lock held | `false` fails the evaluation at its next function call with `ErrorKind::Budget`, which `tryEval` does not catch. The chunk is still mapped, so a group can pass the limit by one chunk per worker. |
+| `release()` | after a mapping failed | Free what you can. iets maps once more, then stops the process with `error: out of memory`. |
 
 A refusal leaves the session usable: the next function call asks `allow`
 again, and the evaluation goes on once it answers `true`.

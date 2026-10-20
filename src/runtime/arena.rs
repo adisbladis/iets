@@ -4,7 +4,7 @@
 //! part of the graph with no further check.
 
 use std::sync::Arc;
-use std::{process, ptr, slice};
+use std::{ptr, slice};
 
 #[cfg(feature = "stats2")]
 use super::census::Census;
@@ -15,24 +15,17 @@ use crate::eval::MAX_CALL_DEPTH;
 use crate::parallel::shared::ArenaUse;
 use crate::session::Session;
 use crate::syntax::symbol::{FxHashMap, FxHashSet};
-use crate::sys::{self, vm};
+use crate::sys;
 
 const CHUNK: usize = 32 << 20;
 
 // Call it on the thread that fills the chunk: zeroing leaves the chunk in
 // that core's L3. On a helper thread on another CCD, one worker ran 20 % slower.
-fn map_chunk(chunk: usize) -> usize {
+fn map_chunk(heap: &Heap, chunk: usize) -> usize {
+    let p = heap.map(chunk);
     // SAFETY: prefaulting only changes how the chunk's own pages are backed.
-    unsafe {
-        let Ok(p) = vm::map(chunk, false) else {
-            // no unwinding from here: other fibers hold arena pointers,
-            // and Nix ends the same way on a heap it cannot grow
-            errln!("error: out of memory");
-            process::exit(1);
-        };
-        sys::prefault(p.cast(), chunk);
-        p as usize
-    }
+    unsafe { sys::prefault(p as *mut u8, chunk) };
+    p
 }
 
 pub struct Arena {
@@ -227,7 +220,7 @@ impl Arena {
             // an allocation cannot fail: map the chunk, fail the next call
             self.call_limit = 0;
         }
-        let base = map_chunk(chunk) as *mut u8;
+        let base = map_chunk(heap, chunk) as *mut u8;
         heap.adopt(base as usize, chunk);
         self.mapped += chunk;
         self.ptr = base;
