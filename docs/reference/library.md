@@ -116,6 +116,8 @@ instead, with `session.heap.set_release(Release::Unmap)` before the session
 goes. A stale value then reads whatever is mapped at its address later, and
 nothing stops the process.
 
+An `Evaluator` is not `Send`: it stays on the thread that built it.
+
 ### Bounding memory
 
 `session.heap.bytes()` is what a session holds: its arena chunks and its
