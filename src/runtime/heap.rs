@@ -29,18 +29,21 @@ struct Inner {
     /// Bump state of the current name block.
     next: usize,
     end: usize,
+    /// Bytes mapped: arena chunks and name blocks.
+    bytes: usize,
 }
 
 impl Heap {
     /// Takes ownership of a mapping: it is released with the heap.
     pub(crate) fn adopt(&self, base: usize, len: usize) {
-        self.inner.lock().unwrap().chunks.push((base, len));
+        let mut g = self.inner.lock().unwrap();
+        g.chunks.push((base, len));
+        g.bytes += len;
     }
 
-    /// Bytes mapped for this session so far.
-    #[cfg(test)]
-    pub(crate) fn mapped(&self) -> usize {
-        self.inner.lock().unwrap().chunks.iter().map(|c| c.1).sum()
+    /// Bytes mapped for this session so far: arena chunks and name blocks.
+    pub fn bytes(&self) -> usize {
+        self.inner.lock().unwrap().bytes
     }
 
     /// `len` bytes at alignment 8 that live as long as the session.
@@ -51,6 +54,7 @@ impl Heap {
             let size = NAME_BLOCK.max(len.next_multiple_of(vm::page_size()));
             let p = map(size);
             g.chunks.push((p, size));
+            g.bytes += size;
             if size > NAME_BLOCK {
                 return p as *mut u8;
             }
@@ -166,7 +170,7 @@ mod tests {
         let big = h.alloc(3 << 20);
         let at = a.as_ptr() as usize;
         assert_eq!(a, b"outPath");
-        assert_eq!(h.mapped(), NAME_BLOCK + (3 << 20));
+        assert_eq!(h.bytes(), NAME_BLOCK + (3 << 20));
         assert!(!is_released(at));
         drop(h);
         assert!(is_released(at));
