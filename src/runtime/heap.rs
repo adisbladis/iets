@@ -7,9 +7,12 @@
 //! faults on first use instead of reading whatever the next session put
 //! there. A host that keeps no `Word` past its session can have the ranges
 //! unmapped instead (`Release::Unmap`).
+//!
+//! A heap can count its bytes into a `MemoryGroup`, whose `MemoryHost` is
+//! asked before each new mapping whether the group may grow.
 
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::{mem, process, ptr, slice};
 
 use crate::parallel::fiber;
@@ -30,6 +33,35 @@ pub enum Release {
     Unmap,
 }
 
+/// Decides whether the sessions of a `MemoryGroup` may map more memory.
+pub trait MemoryHost: Send + Sync {
+    /// Whether the group may hold `total` bytes. Asked before each arena
+    /// chunk or name block a session of the group maps, on the allocating
+    /// thread with no lock held. On `false` the chunk is still mapped, and
+    /// the evaluation fails at its next call with `ErrorKind::Budget`.
+    fn allow(&self, total: usize) -> bool;
+}
+
+/// Sessions whose bytes count against one `MemoryHost` (`Heap::join`).
+pub struct MemoryGroup {
+    bytes: AtomicUsize,
+    host: Box<dyn MemoryHost>,
+}
+
+impl MemoryGroup {
+    pub fn new(host: impl MemoryHost + 'static) -> Arc<MemoryGroup> {
+        Arc::new(MemoryGroup {
+            bytes: AtomicUsize::new(0),
+            host: Box::new(host),
+        })
+    }
+
+    /// Bytes the sessions of the group hold.
+    pub fn bytes(&self) -> usize {
+        self.bytes.load(Ordering::Relaxed)
+    }
+}
+
 #[derive(Default)]
 pub struct Heap {
     inner: Mutex<Inner>,
@@ -46,14 +78,35 @@ struct Inner {
     /// Bytes mapped: arena chunks and name blocks.
     bytes: usize,
     release: Release,
+    group: Option<Arc<MemoryGroup>>,
 }
 
 impl Heap {
-    /// Takes ownership of a mapping: it is released with the heap.
+    /// Takes ownership of a mapping that `grow` counted: it is released
+    /// with the heap.
     pub(crate) fn adopt(&self, base: usize, len: usize) {
-        let mut g = self.inner.lock().unwrap();
-        g.chunks.push((base, len));
-        g.bytes += len;
+        self.inner.lock().unwrap().chunks.push((base, len));
+    }
+
+    /// Counts `len` bytes about to be mapped and asks the group's host
+    /// whether the group may hold them. True outside a group.
+    pub(crate) fn grow(&self, len: usize) -> bool {
+        let (group, total) = {
+            let mut g = self.inner.lock().unwrap();
+            g.bytes += len;
+            let Some(group) = g.group.clone() else {
+                return true;
+            };
+            let total = group.bytes.fetch_add(len, Ordering::Relaxed) + len;
+            (group, total)
+        };
+        group.host.allow(total)
+    }
+
+    /// Asks what `grow` asks for `extra` more bytes, without counting them.
+    pub(crate) fn may_grow(&self, extra: usize) -> bool {
+        let group = self.inner.lock().unwrap().group.clone();
+        group.is_none_or(|g| g.host.allow(g.bytes().saturating_add(extra)))
     }
 
     /// Bytes mapped for this session so far: arena chunks and name blocks.
@@ -66,23 +119,40 @@ impl Heap {
         self.inner.lock().unwrap().release = r;
     }
 
+    /// Moves this heap's bytes into `group`, out of any group before it.
+    pub fn join(&self, group: &Arc<MemoryGroup>) {
+        let mut g = self.inner.lock().unwrap();
+        if let Some(old) = g.group.take() {
+            old.bytes.fetch_sub(g.bytes, Ordering::Relaxed);
+        }
+        group.bytes.fetch_add(g.bytes, Ordering::Relaxed);
+        g.group = Some(group.clone());
+    }
+
     /// `len` bytes at alignment 8 that live as long as the session.
     pub(crate) fn alloc(&self, len: usize) -> *mut u8 {
         let len = len.max(1).next_multiple_of(8);
-        let mut g = self.inner.lock().unwrap();
-        if g.end - g.next < len {
-            let size = NAME_BLOCK.max(len.next_multiple_of(vm::page_size()));
-            let p = map(size);
-            g.chunks.push((p, size));
-            g.bytes += size;
-            if size > NAME_BLOCK {
+        {
+            let mut g = self.inner.lock().unwrap();
+            if g.end - g.next >= len {
+                let p = g.next;
+                g.next += len;
                 return p as *mut u8;
             }
-            g.next = p;
-            g.end = p + size;
         }
-        let p = g.next;
-        g.next += len;
+        // unlocked, as the host may call back into the heap; when two
+        // threads race here, one block's unused tail is lost
+        let size = NAME_BLOCK.max(len.next_multiple_of(vm::page_size()));
+        // a name block is small; the arena reports refusals
+        self.grow(size);
+        let p = map(size);
+        let mut g = self.inner.lock().unwrap();
+        g.chunks.push((p, size));
+        if size > NAME_BLOCK {
+            return p as *mut u8;
+        }
+        g.next = p + len;
+        g.end = p + size;
         p as *mut u8
     }
 
@@ -119,6 +189,9 @@ impl Drop for Heap {
     fn drop(&mut self) {
         let inner = self.inner.get_mut().unwrap();
         drop(mem::take(&mut inner.kept));
+        if let Some(g) = inner.group.take() {
+            g.bytes.fetch_sub(inner.bytes, Ordering::Relaxed);
+        }
         let chunks = mem::take(&mut inner.chunks);
         if chunks.is_empty() {
             return;
@@ -222,5 +295,38 @@ pub(crate) mod tests {
         drop(h);
         assert!(!is_released(at));
         assert_eq!(UNMAPPED.with(|u| u.get()) - before, NAME_BLOCK);
+    }
+
+    /// Allows up to `limit` bytes.
+    pub(crate) struct Limit {
+        pub(crate) limit: usize,
+    }
+
+    impl MemoryHost for Limit {
+        fn allow(&self, total: usize) -> bool {
+            total <= self.limit
+        }
+    }
+
+    #[test]
+    fn a_group_counts_its_heaps_and_its_host_decides() {
+        let g = MemoryGroup::new(Limit {
+            limit: 3 * NAME_BLOCK,
+        });
+        let a = Heap::default();
+        a.alloc(8);
+        a.join(&g);
+        assert_eq!(g.bytes(), NAME_BLOCK);
+        let b = Heap::default();
+        b.join(&g);
+        assert!(b.grow(NAME_BLOCK));
+        assert!(!b.grow(NAME_BLOCK + 1));
+        assert!(!b.may_grow(0));
+        assert_eq!(g.bytes(), 3 * NAME_BLOCK + 1);
+        drop(b);
+        assert_eq!(g.bytes(), NAME_BLOCK);
+        assert!(a.may_grow(NAME_BLOCK));
+        drop(a);
+        assert_eq!(g.bytes(), 0);
     }
 }

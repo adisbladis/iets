@@ -39,6 +39,7 @@ dash means the code has no kind of its own.
 | `missing-attr` | `ErrorKind::MissingAttr` | an attribute that is not there |
 | `infinite-recursion` | `ErrorKind::InfiniteRecursion` | a value that depends on itself |
 | `stack-overflow` | `ErrorKind::StackOverflow` | the evaluator ran out of stack |
+| `budget` | `ErrorKind::Budget` | the memory host of the session's group refused more memory (`docs/reference/library.md`, "Bounding memory"); `tryEval` does not catch it |
 | `parse` | `ErrorKind::Parse` | a syntax error |
 | `lint` | `ErrorKind::Lint` | a lint at level `error`; at `warn`, a level-1 record |
 | `hash-mismatch` | `ErrorKind::HashMismatch`, build status | a fetched tree or a fixed-output build whose hash is not the one given |
