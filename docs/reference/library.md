@@ -107,7 +107,9 @@ By default, released memory stays reserved and inaccessible, so its
 addresses are never reused and a stale value never reads another session's
 data. That costs address space and kernel mappings, not memory: a host that
 releases many thousands of large sessions can reach `vm.max_map_count`. The
-handler that prints the message replaces Rust's `SIGSEGV` handler.
+handler that prints the message is installed the first time a session is
+released. A fault at any other address goes to the handler that was there
+before it, Rust's or your own.
 
 A host that keeps no `Word` past its session can give the memory back
 instead, with `session.heap.set_release(Release::Unmap)` before the session
