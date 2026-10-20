@@ -3,24 +3,20 @@
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
 
 use crate::error::{self, Error as CrateError};
 use crate::nixbin;
+use crate::session::Session;
 use crate::store::path::{StorePath, store_dir};
 use crate::store::source::{SourceKind, SourceOrigin, SrcPath};
 
-/// What the store answered for a path, kept for the life of the process: the
-/// references of a valid store path never change.
-static REFERENCES: Mutex<Option<HashMap<String, BTreeSet<StorePath>>>> = Mutex::new(None);
-
 /// The references the local store holds for `path`, empty when it cannot
 /// answer. primops.cc:addPath needs them for a store path it is given with a
-/// context, and swallows `queryPathInfo`'s error the same way.
-pub fn references_of(path: &StorePath) -> BTreeSet<StorePath> {
+/// context, and swallows `queryPathInfo`'s error the same way. The answer
+/// is cached in `session`: a valid path's references never change.
+pub fn references_of(session: &Session, path: &StorePath) -> BTreeSet<StorePath> {
     let full = path.to_string();
-    let mut kept = REFERENCES.lock().expect("references cache");
-    let table = kept.get_or_insert_with(HashMap::new);
+    let mut table = session.store_refs.lock().unwrap();
     if let Some(r) = table.get(&full) {
         return r.clone();
     }

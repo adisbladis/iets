@@ -9,6 +9,7 @@
 //! [`bind`]. docs/reference/library.md says what a host owns.
 
 use std::cell::RefCell;
+use std::collections::{BTreeSet, HashMap};
 use std::panic;
 use std::process;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -24,6 +25,7 @@ use crate::provenance::SourceMap;
 use crate::runtime::heap::Heap;
 use crate::settings::Settings;
 use crate::stdout::Stdout;
+use crate::store::path::StorePath;
 use crate::{config, error, treestore};
 
 #[derive(Default)]
@@ -56,6 +58,8 @@ pub struct Session {
     /// Released when the last of the session, its evaluators and its
     /// worker threads lets go (docs/reference/library.md).
     pub heap: Arc<Heap>,
+    /// The cache of `store::locate::references_of`.
+    pub(crate) store_refs: Mutex<HashMap<String, BTreeSet<StorePath>>>,
 }
 
 thread_local! {
