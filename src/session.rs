@@ -209,7 +209,7 @@ mod tests {
         let (ev_a, wa) = eval_in(&a, EXPR);
         let (mut ev_b, wb) = eval_in(&b, EXPR);
         let at = wa.bits() as usize & 0xffff_ffff_fff8;
-        assert!(a.heap.mapped() > 0);
+        assert!(a.heap.bytes() > 0);
         drop(ev_a);
         drop(a);
         assert!(is_released(at));

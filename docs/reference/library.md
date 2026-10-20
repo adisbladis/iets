@@ -23,6 +23,7 @@ because a word made up from bits would let a safe call read any address.
 | Create an evaluator | `eval::Evaluator::new()` for the defaults; `eval::EvalConfig::new()`, its setters, then `build()` |
 | Settings of the arguments | `EvalArgs::config(base)` puts the lints, the IR cache, the search path and `--dump-drvs` on an `EvalConfig` |
 | The state a run owns | `session::Session::new()`, `Session::enter()` ("What the host owns") |
+| The memory a session holds | `Session::heap`: `bytes()` ("Sessions and memory") |
 | Environment settings | `Session::settings()`, `Session::load_settings(&opts)` (docs/reference/settings.md) |
 | Where messages go | `Session::log.write_to(Box<dyn Write + Send>)`, `write_to_stderr()` |
 | Arguments of one evaluation | `api::EvalArgs` (`EvalArgs::new()` for the defaults) |
@@ -106,6 +107,11 @@ reused and a stale value never reads another session's data. That costs
 address space and kernel mappings, not memory: a host that releases many
 thousands of large sessions can reach `vm.max_map_count`. The handler that
 prints the message replaces Rust's `SIGSEGV` handler.
+
+### Bounding memory
+
+`session.heap.bytes()` is what a session holds: its arena chunks and its
+symbol names.
 
 ## The value API
 
