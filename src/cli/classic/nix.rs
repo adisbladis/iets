@@ -640,7 +640,10 @@ fn realise(
 /// An error the printer shows in place of the value. `Unsupported` must
 /// escape so the caller can fall back to the real nix instead.
 fn printable(e: &Error) -> bool {
-    !matches!(e.kind, ErrorKind::Unsupported | ErrorKind::StackOverflow)
+    !matches!(
+        e.kind,
+        ErrorKind::Unsupported | ErrorKind::StackOverflow | ErrorKind::Budget
+    )
 }
 
 /// `nix eval`'s printer (print.cc:Printer with `force`, `derivationPaths`

@@ -23,7 +23,8 @@ because a word made up from bits would let a safe call read any address.
 | Create an evaluator | `eval::Evaluator::new()` for the defaults; `eval::EvalConfig::new()`, its setters, then `build()` |
 | Settings of the arguments | `EvalArgs::config(base)` puts the lints, the IR cache, the search path and `--dump-drvs` on an `EvalConfig` |
 | The state a run owns | `session::Session::new()`, `Session::enter()` ("What the host owns") |
-| The memory a session holds | `Session::heap`: `bytes()`, `set_release(Release)` ("Sessions and memory") |
+| The memory a session holds | `Session::heap`: `bytes()`, `set_release(Release)`, `join(&MemoryGroup)` ("Sessions and memory") |
+| Bound several sessions together | `runtime::heap::{MemoryGroup, MemoryHost}` ("Bounding memory") |
 | Environment settings | `Session::settings()`, `Session::load_settings(&opts)` (docs/reference/settings.md) |
 | Where messages go | `Session::log.write_to(Box<dyn Write + Send>)`, `write_to_stderr()` |
 | Arguments of one evaluation | `api::EvalArgs` (`EvalArgs::new()` for the defaults) |
@@ -116,7 +117,39 @@ nothing stops the process.
 ### Bounding memory
 
 `session.heap.bytes()` is what a session holds: its arena chunks and its
-symbol names.
+symbol names. To bound several sessions together, put them in one
+`MemoryGroup`, whose `MemoryHost` decides how far the group may grow:
+
+```rust
+use iets::runtime::heap::{MemoryGroup, MemoryHost, Release};
+
+struct Cap(usize);
+
+impl MemoryHost for Cap {
+    fn allow(&self, total: usize) -> bool {
+        total <= self.0
+    }
+}
+
+let group = MemoryGroup::new(Cap(8 << 30));
+let session = Session::new();
+session.heap.join(&group);              // before the first evaluator
+session.heap.set_release(Release::Unmap);
+let mut ev = EvalConfig::new().session(session.clone()).build();
+```
+
+The host is asked before each arena chunk (32 MiB) and each symbol name
+block a session of the group maps, with the group's total in bytes:
+
+| Call | When | What the answer does |
+|:---|:---|:---|
+| `allow(total)` | before every new chunk, on the evaluating thread, with no lock held | `false` fails the evaluation at its next function call with `ErrorKind::Budget`, which `tryEval` does not catch. The chunk is still mapped, so a group can pass the limit by one chunk per worker. |
+
+A refusal leaves the session usable: the next function call asks `allow`
+again, and the evaluation goes on once it answers `true`.
+`builtins.genList` asks before it allocates, since it makes no call while it
+fills the list. A released session's bytes leave `group.bytes()`. A session
+in no group is never limited.
 
 ## The value API
 

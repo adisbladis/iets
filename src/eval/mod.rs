@@ -1520,11 +1520,25 @@ impl Evaluator {
     #[inline]
     pub(crate) fn enter_call(&mut self, pos: Pos) -> EvalResult<()> {
         self.call_depth += 1;
-        if self.call_depth > MAX_CALL_DEPTH {
-            self.call_depth -= 1;
-            return Err(Error::stack_overflow(pos));
+        if self.call_depth > self.arena.call_limit {
+            return self.call_refused(pos);
         }
         Ok(())
+    }
+
+    /// The depth passed `arena.call_limit`: a stack overflow, or a refused
+    /// chunk. After a refusal the call goes on if the host now allows it.
+    #[cold]
+    fn call_refused(&mut self, pos: Pos) -> EvalResult<()> {
+        if self.call_depth <= MAX_CALL_DEPTH && self.arena.allowed_again() {
+            return Ok(());
+        }
+        self.call_depth -= 1;
+        Err(if self.call_depth < MAX_CALL_DEPTH {
+            Error::budget(pos)
+        } else {
+            Error::stack_overflow(pos)
+        })
     }
 
     /// Apply `func` to `args` left to right. Returns a forced value.

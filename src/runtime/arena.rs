@@ -11,6 +11,7 @@ use super::census::Census;
 use super::heap::Heap;
 use super::value::{Ctx, ListObj};
 use super::word::Word;
+use crate::eval::MAX_CALL_DEPTH;
 use crate::parallel::shared::ArenaUse;
 use crate::session::Session;
 use crate::syntax::symbol::{FxHashMap, FxHashSet};
@@ -44,6 +45,9 @@ pub struct Arena {
     /// Boxed: `Arena` is swapped on every fiber switch, so the marks must
     /// not add their 448 bytes to that move.
     folded: Box<Folded>,
+    /// The depth `Evaluator::enter_call` allows: `MAX_CALL_DEPTH`, or 0 after
+    /// the memory host refused a chunk.
+    pub(crate) call_limit: u32,
     /// String bytes by content, and the context-free string object over
     /// them once one was made (EMPTY until then). nixpkgs builds the same
     /// text millions of times (docs/explanation/evaluation.md).
@@ -96,12 +100,30 @@ impl Arena {
             mapped: 0,
             stats: Stats::default(),
             folded: Box::default(),
+            call_limit: MAX_CALL_DEPTH,
             strings: FxHashMap::default(),
             ctxs: FxHashSet::default(),
             heap: None,
             empty_list: None,
             empty_attrs: None,
         }
+    }
+
+    /// Whether the memory host allows `bytes` more, for a builtin that
+    /// allocates that much without making a call.
+    pub(crate) fn may_grow(&self, bytes: usize) -> bool {
+        self.heap.as_ref().is_none_or(|h| h.may_grow(bytes))
+    }
+
+    /// After a refusal, lifts the call limit if the host now allows the
+    /// group's size.
+    #[cold]
+    pub(crate) fn allowed_again(&mut self) -> bool {
+        if !self.heap.as_ref().is_none_or(|h| h.may_grow(0)) {
+            return false;
+        }
+        self.call_limit = MAX_CALL_DEPTH;
+        true
     }
 
     /// Whether a fold would carry anything. The placeholder arena never
@@ -198,10 +220,15 @@ impl Arena {
         // Anonymous mmap, prefaulted in one syscall: MADV_POPULATE_WRITE
         // zeroes the chunk inside the kernel without one trap per page. The
         // chunk goes with the session's heap.
+        let heap = self
+            .heap
+            .get_or_insert_with(|| Session::current().heap.clone());
+        if !heap.grow(chunk) {
+            // an allocation cannot fail: map the chunk, fail the next call
+            self.call_limit = 0;
+        }
         let base = map_chunk(chunk) as *mut u8;
-        self.heap
-            .get_or_insert_with(|| Session::current().heap.clone())
-            .adopt(base as usize, chunk);
+        heap.adopt(base as usize, chunk);
         self.mapped += chunk;
         self.ptr = base;
         self.end = unsafe { base.add(chunk) };
