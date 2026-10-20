@@ -58,6 +58,10 @@ pub(super) fn current_time(ev: &mut Evaluator, _args: &[Word], _pos: Pos) -> Eva
 /// no run state: a pattern compiles the same way in every session.
 type CompiledRegex = Result<regex::Prog, regex::Error>;
 
+/// The cache is emptied when it reaches this many patterns. A NixOS
+/// evaluation uses about 60.
+const REGEX_CACHE_CAP: usize = 4096;
+
 thread_local! {
     static REGEX_CACHE: RefCell<FxHashMap<Vec<u8>, Rc<CompiledRegex>>> = RefCell::new(FxHashMap::default());
 }
@@ -90,6 +94,9 @@ fn get_regex(re: &[u8]) -> Rc<CompiledRegex> {
             return r.clone();
         }
         let r = Rc::new(regex::compile(re));
+        if c.len() >= REGEX_CACHE_CAP {
+            c.clear();
+        }
         c.insert(re.to_vec(), r.clone());
         r
     })
@@ -550,4 +557,18 @@ fn get_env(ev: &mut Evaluator, args: &[Word], pos: Pos) -> EvalResult<Word> {
 
 fn break_(ev: &mut Evaluator, args: &[Word], _pos: Pos) -> EvalResult<Word> {
     ev.force(args[0])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_regex_cache_starts_again_when_full() {
+        for i in 0..REGEX_CACHE_CAP + 10 {
+            assert!(get_regex(format!("a{i}").as_bytes()).is_ok());
+        }
+        assert!(regex_cache_len() <= REGEX_CACHE_CAP);
+        assert!(regex_cache_len() > 0);
+    }
 }
