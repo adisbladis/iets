@@ -158,6 +158,17 @@ On NixOS, import `nixosModules.default` and set `iets.classic.enable = true`.
 That puts the classic mode commands (`nix-build`, `nix-shell`, ...) ahead of `nix` in
 your path. If direnv is enabled, `use flake` goes through iets too.
 
+### Binary cache
+
+CI pushes iets to `cache.numtide.com`:
+
+```nix
+nix.settings = {
+  extra-substituters = [ "https://cache.numtide.com" ];
+  extra-trusted-public-keys = [ "niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g=" ];
+};
+```
+
 ## Documentation
 
 `./docs` is LLM-generated, but it should be useful as reference. Start with
