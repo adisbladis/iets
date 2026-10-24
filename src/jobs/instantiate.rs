@@ -5,11 +5,11 @@
 //! `--gc-roots-dir` roots (worker.cc:registerGCRoot) and the batch's lines
 //! go on to the sink.
 
+use std::fs;
 use std::path::PathBuf;
-use std::sync::mpsc::{Sender, channel};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread::{Builder, JoinHandle};
 use std::time::Instant;
-use std::{fs, mem};
 
 use super::line::{Job, Line};
 use crate::build::backend::{Backend, Worker};
@@ -22,7 +22,7 @@ use crate::remote::worker::{Connection, Options, Transport};
 use crate::session;
 use crate::store::path::StorePath;
 
-/// Jobs per daemon round trip.
+/// The most lines per daemon round trip.
 pub const BATCH: usize = 256;
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -85,6 +85,17 @@ impl Store {
         self.worker.conn
     }
 }
+/// The first line and what queued behind it, up to `max`.
+fn next_batch<T>(rx: &Receiver<T>, max: usize) -> Option<Vec<T>> {
+    let mut batch = vec![rx.recv().ok()?];
+    while batch.len() < max
+        && let Ok(x) = rx.try_recv()
+    {
+        batch.push(x);
+    }
+    Some(batch)
+}
+
 /// The thread: lines in, instantiated batches out to `sink`, in order.
 pub struct Instantiator {
     tx: Option<Sender<Line>>,
@@ -101,10 +112,8 @@ impl Instantiator {
             .name("instantiate".into())
             .stack_size(64 << 20)
             .spawn(session::bind(move || {
-                let mut pending: Vec<Line> = Vec::new();
-                let mut njobs = 0usize;
-                let mut flush = |store: &mut Store, pending: &mut Vec<Line>| -> Result<()> {
-                    let jobs: Vec<&Job> = pending
+                while let Some(lines) = next_batch(&rx, BATCH) {
+                    let jobs: Vec<&Job> = lines
                         .iter()
                         .filter_map(|l| match l {
                             Line::Job(j) => Some(j),
@@ -114,19 +123,8 @@ impl Instantiator {
                     if !jobs.is_empty() {
                         store.instantiate(&jobs)?;
                     }
-                    sink(mem::take(pending))
-                };
-                for line in rx {
-                    if matches!(line, Line::Job(_)) {
-                        njobs += 1;
-                    }
-                    pending.push(line);
-                    if njobs >= BATCH {
-                        flush(&mut store, &mut pending)?;
-                        njobs = 0;
-                    }
+                    sink(lines)?;
                 }
-                flush(&mut store, &mut pending)?;
                 Ok(store)
             }))
             .expect("spawn instantiate thread");
