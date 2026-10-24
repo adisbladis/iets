@@ -1,7 +1,7 @@
 { lib, pkgs, stdenv, runCommand, git, jq, nix, util-linux, nix-eval-jobs, path, ast-grep, craneLib, commonArgs, sources, ietsRiscv64, fuzz }:
 let
   # the dev profile, as `cargo test` in the dev shell: the release profile is
-  # fat LTO, minutes for no extra coverage
+  # LTO, minutes for no extra coverage
   dev = commonArgs // { src = sources.test; CARGO_PROFILE = "dev"; };
   withDev = dev // {
     cargoArtifacts = craneLib.buildDepsOnly (dev // { cargoCheckExtraArgs = "--all-targets"; });
