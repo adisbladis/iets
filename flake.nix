@@ -64,9 +64,14 @@
           (scope.callPackages ./nix/packages.nix { })
           { default = scope.iets; }))
         { x86_64-linux = { inherit release; }; };
-      checks = forAll (scope: onLinux scope
-        (scope.callPackages ./nix/checks.nix { })
-        { build = scope.iets; devShell = scope.devShell; });
+      # every package and dev shell, so that CI pushes them to the cache; the
+      # fuzz campaigns run for an hour each
+      checks = lib.mapAttrs (system: scope:
+        lib.mapAttrs' (n: lib.nameValuePair "package-${n}")
+          (lib.filterAttrs (n: _: !lib.hasSuffix "-campaign" n) self.packages.${system})
+        // lib.mapAttrs' (n: lib.nameValuePair "devShell-${n}") self.devShells.${system}
+        // onLinux scope (scope.callPackages ./nix/checks.nix { }) { })
+        (forAll lib.id);
       herculesCI = { primaryRepo, ... }: {
         onPush.default.outputs = {
           inherit release;

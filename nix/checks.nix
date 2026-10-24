@@ -1,4 +1,4 @@
-{ lib, pkgs, stdenv, runCommand, git, jq, nix, util-linux, nix-eval-jobs, path, ast-grep, craneLib, commonArgs, sources, ietsStatic, ietsRiscv64, fuzz }:
+{ lib, pkgs, stdenv, runCommand, git, jq, nix, util-linux, nix-eval-jobs, path, ast-grep, craneLib, commonArgs, sources, ietsRiscv64, fuzz }:
 let
   # the dev profile, as `cargo test` in the dev shell: the release profile is
   # fat LTO, minutes for no extra coverage
@@ -63,7 +63,6 @@ in
       echo "VERSION is ${commonArgs.version} but Cargo.toml is ${cargo}" >&2
       exit 1
     '');
-  static = ietsStatic;
 }
 # catches a missing per-arch cfg
 // lib.optionalAttrs (stdenv.hostPlatform.system == "x86_64-linux") {
