@@ -21,10 +21,6 @@
         sources = final.callPackage ./nix/sources.nix { };
         iets = final.callPackage ./nix/iets.nix { };
         ietsStatic = (scopeFor pkgs.pkgsStatic).iets;
-        # what the conformance check runs: optimized, without LTO
-        ietsCi = final.iets.override (o: {
-          commonArgs = o.commonArgs // { CARGO_PROFILE = "ci"; };
-        });
         # only a check builds it: the dev profile, as a missing cfg fails in any
         # profile and LTO is the slowest compile of the suite
         ietsRiscv64 = (scopeFor pkgs.pkgsCross.riscv64).iets.override (o: {
@@ -40,7 +36,7 @@
             })
           { };
         # the differential fuzzer against Nix (docs/how-to/fuzz.md)
-        fuzz = final.callPackage ./nix/fuzz.nix { iets = final.ietsCi; };
+        fuzz = final.callPackage ./nix/fuzz.nix { };
         # for files that return a set of packages
         callPackages = pkgs.lib.callPackagesWith (pkgs // final);
       });

@@ -71,13 +71,6 @@ panic = "abort"
 debug = 1
 [profile.bench]
 inherits = "release"
-# the checks that need optimized code: release without its LTO, which
-# takes minutes per build (nix/checks.nix)
-[profile.ci]
-inherits = "release"
-lto = false
-codegen-units = 16
-debug = "line-tables-only"
 
 [dev-dependencies]
 rstest = { version = "0.28.0", default-features = false }

@@ -27,7 +27,7 @@ in
   # it is a derivation of its own that a change to iets does not rebuild.
   nixpkgs-eval =
     let
-      args = commonArgs // { src = sources.test; CARGO_PROFILE = "ci"; };
+      args = commonArgs // { src = sources.test; };
     in
     craneLib.cargoNextest (args // {
       cargoArtifacts = craneLib.buildDepsOnly (args // { cargoCheckExtraArgs = "--all-targets"; });
