@@ -21,12 +21,8 @@
         sources = final.callPackage ./nix/sources.nix { };
         iets = final.callPackage ./nix/iets.nix { };
         ietsStatic = (scopeFor pkgs.pkgsStatic).iets;
-        # what the conformance check runs: optimized, without fat LTO
-        ietsCi = final.iets.override (o: {
-          commonArgs = o.commonArgs // { CARGO_PROFILE = "ci"; };
-        });
         # only a check builds it: the dev profile, as a missing cfg fails in any
-        # profile and fat LTO is the slowest compile of the suite
+        # profile and LTO is the slowest compile of the suite
         ietsRiscv64 = (scopeFor pkgs.pkgsCross.riscv64).iets.override (o: {
           commonArgs = o.commonArgs // { CARGO_PROFILE = "dev"; };
         });
@@ -40,7 +36,7 @@
             })
           { };
         # the differential fuzzer against Nix (docs/how-to/fuzz.md)
-        fuzz = final.callPackage ./nix/fuzz.nix { iets = final.ietsCi; };
+        fuzz = final.callPackage ./nix/fuzz.nix { };
         # for files that return a set of packages
         callPackages = pkgs.lib.callPackagesWith (pkgs // final);
       });
@@ -64,9 +60,14 @@
           (scope.callPackages ./nix/packages.nix { })
           { default = scope.iets; }))
         { x86_64-linux = { inherit release; }; };
-      checks = forAll (scope: onLinux scope
-        (scope.callPackages ./nix/checks.nix { })
-        { build = scope.iets; devShell = scope.devShell; });
+      # every package and dev shell, so that CI pushes them to the cache; the
+      # fuzz campaigns run for an hour each
+      checks = lib.mapAttrs (system: scope:
+        lib.mapAttrs' (n: lib.nameValuePair "package-${n}")
+          (lib.filterAttrs (n: _: !lib.hasSuffix "-campaign" n) self.packages.${system})
+        // lib.mapAttrs' (n: lib.nameValuePair "devShell-${n}") self.devShells.${system}
+        // onLinux scope (scope.callPackages ./nix/checks.nix { }) { })
+        (forAll lib.id);
       herculesCI = { primaryRepo, ... }: {
         onPush.default.outputs = {
           inherit release;
