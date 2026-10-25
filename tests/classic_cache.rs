@@ -16,6 +16,7 @@ use e2e::{Store, ok, stderr, stdout};
 use serde_json::Value;
 
 const FLAKE: &str = r#"{
+  nixConfig.extra-substituters = [ "https://cache.invalid" ];
   inputs.tb = { url = "file://@CC@/tbA.tar.gz"; flake = false; };
   outputs = { self, tb }:
     let
@@ -194,7 +195,8 @@ fn the_tracing_cache() {
             !(stderr(&cold) + &stderr(&hit)).contains("warning: ["),
             stderr(&cold),
         );
-        // the warnings come from the command line, so a hit gives them too
+        // the warnings come from the command line, so a hit gives them too;
+        // accept-flake-config's because the entry kept the flake's nixConfig
         let noisy = || {
             one(
                 &["--accept-flake-config", "--eval-store", "auto"],

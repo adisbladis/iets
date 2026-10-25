@@ -130,7 +130,7 @@ pub fn global_flag(c: &mut Common, a: &mut Argv, s: &str) -> Result<bool, String
         return Ok(false);
     }
     match s {
-        "--accept-flake-config" => ignored::flag(s, ignored::NO_NIX_CONFIG),
+        "--accept-flake-config" => ignored::flag_for_nix_config(s),
         // iets has every feature but this one, which changes what `fromTOML`
         // returns (docs/reference/divergences.md). In classic mode the
         // value is still a setting, because the builtins Nix gates on a

@@ -10,7 +10,7 @@ use crate::cli::{
 use crate::error::{self, Error as CrateError};
 use crate::eval::{Error, Evaluator, Pos};
 use crate::jobs::cache::Resolver;
-use crate::jobs::collector::{Out, Sink, run_collector, run_worker, write_out};
+use crate::jobs::collector::{MSG_NIX_CONFIG, Out, Sink, run_collector, run_worker, write_out};
 use crate::jobs::emit::Emitter;
 use crate::jobs::instantiate::{self, Instantiator, Store};
 use crate::jobs::{self, Line, Opts};
@@ -457,6 +457,9 @@ fn jobs_worker(ev: &mut Evaluator, a: EvalArgs, j: &JobsArgs, transport: &Transp
         Ok(r) => r,
         Err(e) => return fail(&out, jobs::error_report(ev, &e)),
     };
+    if ignored::nix_config_was_seen() {
+        write_out(&out, MSG_NIX_CONFIG.as_bytes());
+    }
     let inst = if j.opts.no_instantiate {
         None
     } else {

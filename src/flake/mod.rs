@@ -17,6 +17,7 @@ use crate::compile;
 use crate::compile::ir::ParamIr;
 use crate::error::{Error, Result};
 use crate::eval::{Error as EvalError, ErrorKind, EvalResult, Evaluator, Pos};
+use crate::ignored;
 use crate::runtime::{AttrsObj, Value, Word};
 use crate::source::lock::Declared;
 use crate::source::{self, AttrVal, SourceRef, lock};
@@ -260,9 +261,16 @@ fn read_traced(ev: &Evaluator, p: &Path) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// Evaluates the flake: the `callFlake` result (`_type`, `inputs`, `outputs`,
-/// `sourceInfo` and its fields), as `nix-eval-jobs --flake DIR` walks it.
+/// Evaluates the top-level flake: the `callFlake` result (`_type`, `inputs`,
+/// `outputs`, `sourceInfo` and its fields), as `nix-eval-jobs --flake DIR`
+/// walks it.
 pub fn eval_flake_value(ev: &mut Evaluator, fr: &FlakeRef) -> EvalResult<Word> {
+    load_flake(ev, fr, true)
+}
+
+/// `top`: the flake a command names, whose `nixConfig` Nix would apply;
+/// `builtins.getFlake` loads one that is not.
+fn load_flake(ev: &mut Evaluator, fr: &FlakeRef, top: bool) -> EvalResult<Word> {
     let pos = Pos::NONE;
     let lock_path = fr.lock.clone().unwrap_or_else(|| fr.dir.join("flake.lock"));
     let lock_bytes = match read_traced(ev, &lock_path) {
@@ -329,7 +337,10 @@ pub fn eval_flake_value(ev: &mut Evaluator, fr: &FlakeRef) -> EvalResult<Word> {
         flake_dir.push(b'/');
         flake_dir.extend_from_slice(subdir.as_bytes());
     }
-    check_declared_inputs(ev, &flake_dir, &lock, pos)?;
+    let has_nix_config = check_declared_inputs(ev, &flake_dir, &lock, pos)?;
+    if top && has_nix_config {
+        ignored::nix_config_seen();
+    }
 
     let ir = ev.compile_internal(b"\xc2\xabcall-flake\xc2\xbb", CALL_FLAKE.as_bytes())?;
     let root_env = ev.root_env;
@@ -408,7 +419,7 @@ pub fn get_flake(ev: &mut Evaluator, args: &[Word], pos: Pos) -> EvalResult<Word
         _ => path.as_bytes().to_vec(),
     };
     let fr = local_flake(&full, true, Vec::new()).map_err(|e| eval_error(e, pos))?;
-    eval_flake_value(ev, &fr)
+    load_flake(ev, &fr, false)
 }
 
 /// `path:DIR?narHash=H` and nothing else: a reference its NAR hash locks, so
@@ -487,12 +498,13 @@ pub fn select(ev: &mut Evaluator, mut v: Word, path: &[String]) -> EvalResult<Op
 /// Every input `flake.nix` declares must have a lock entry; Nix would
 /// otherwise fetch and lock it. flake.cc:getFlake declares one for each
 /// name in `inputs`, and one for each formal of `outputs` but `self`.
+/// True when `flake.nix` has a `nixConfig`.
 fn check_declared_inputs(
     ev: &mut Evaluator,
     flake_dir: &[u8],
     lock: &lock::Lock,
     pos: Pos,
-) -> EvalResult<()> {
+) -> EvalResult<bool> {
     let mut p = flake_dir.to_vec();
     p.extend_from_slice(b"/flake.nix");
     let v = ev.eval_file(&p, pos)?;
@@ -536,10 +548,10 @@ fn check_declared_inputs(
             ));
         }
     }
-    match inputs {
-        Some(inputs) => check_inputs(ev, lock, &lock.root, "", inputs, pos),
-        None => Ok(()),
+    if let Some(inputs) = inputs {
+        check_inputs(ev, lock, &lock.root, "", inputs, pos)?;
     }
+    Ok(attrs.get(ev.sym(b"nixConfig")).is_some())
 }
 
 /// flake.cc:computeLocks keeps a lock entry only while `flake.nix`, with

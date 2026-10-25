@@ -10,6 +10,7 @@ use std::time::Instant;
 use crate::builtins::derivation::DrvInfo;
 use crate::cachefs::{self, Shape};
 use crate::eval::Evaluator;
+use crate::ignored;
 use crate::log;
 use crate::session::Session;
 use crate::store::path::StorePath;
@@ -138,10 +139,16 @@ impl Cache {
     /// the parts it validated and the new read set. The other parts come from
     /// the open generation, so a sibling's publish in between is not mixed in.
     fn republish(&self, entry: &Entry, readset: &[u8]) {
-        let kept: Vec<(Part, Vec<u8>)> = [Part::Warnings, Part::Drvs, Part::Sources, Part::Result]
-            .into_iter()
-            .filter_map(|p| Some((p, entry.part(p)?)))
-            .collect();
+        let kept: Vec<(Part, Vec<u8>)> = [
+            Part::Warnings,
+            Part::NixConfig,
+            Part::Drvs,
+            Part::Sources,
+            Part::Result,
+        ]
+        .into_iter()
+        .filter_map(|p| Some((p, entry.part(p)?)))
+        .collect();
         let mut parts: Vec<(Part, &[u8])> = kept.iter().map(|(p, b)| (*p, b.as_slice())).collect();
         parts.push((Part::Readset, readset));
         let _ = self.store.publish(&self.key, &parts);
@@ -176,6 +183,9 @@ impl Cache {
         let mut parts: Vec<(Part, &[u8])> = Vec::with_capacity(5);
         if !warnings.is_empty() {
             parts.push((Part::Warnings, &warnings));
+        }
+        if ignored::nix_config_was_seen() {
+            parts.push((Part::NixConfig, &[]));
         }
         if tables {
             parts.push((Part::Drvs, &drvs));
@@ -215,6 +225,15 @@ impl Cache {
     pub fn replay_warnings(&self) {
         if let Some(bytes) = self.part(Part::Warnings) {
             Session::current().log.err(&log::replay_lints(&bytes));
+        }
+    }
+
+    /// On a hit: the warnings that wait for a `nixConfig`, when the recorded
+    /// run's top-level flake had one. Classic mode replays no lints, but
+    /// these come from its command line.
+    pub fn replay_nix_config(&self) {
+        if self.part(Part::NixConfig).is_some() {
+            ignored::nix_config_seen();
         }
     }
 

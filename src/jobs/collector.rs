@@ -9,6 +9,9 @@
 //! for a set to recurse into, `ok` for a skipped node or a queued job, or
 //! an error line; job lines at any time (the worker's instantiator prints
 //! them once their batch is registered); `restart` last when it leaves.
+//! `nix-config`, before the first `next`, when the root flake has a
+//! `nixConfig`: a worker is hushed, so the collector gives the warnings
+//! that wait for one.
 
 use std::collections::BTreeSet;
 use std::io::{self, BufRead, BufReader, Write};
@@ -25,6 +28,7 @@ use super::{
 };
 use crate::error::{Error, Result};
 use crate::eval::Evaluator;
+use crate::ignored;
 use crate::log;
 use crate::print::lexicographic_order;
 use crate::runtime::Word;
@@ -36,6 +40,7 @@ pub const MSG_RESTART: &str = "restart";
 pub const MSG_OK: &str = "ok";
 pub const MSG_EXIT: &str = "exit";
 pub const MSG_DO: &str = "do ";
+pub const MSG_NIX_CONFIG: &str = "nix-config";
 
 pub type Out = Arc<Mutex<Box<dyn Write + Send>>>;
 
@@ -237,6 +242,7 @@ impl Proc {
                 b"next" => return Ok(Control::Next),
                 b"restart" => return Ok(Control::Restart),
                 b"ok" => return Ok(Control::Ok),
+                b"nix-config" => ignored::nix_config_seen(),
                 s if s.first() == Some(&b'{') => {
                     let fields = split_object(s).map_err(|e| {
                         Error::Protocol(format!(

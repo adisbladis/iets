@@ -36,6 +36,9 @@ pub enum Part {
     Sources,
     /// The lint warnings the run printed; a hit prints them again.
     Warnings,
+    /// Empty, and there when the run's top-level flake had a `nixConfig`:
+    /// a hit gives the warnings that wait for one (`ignored`).
+    NixConfig,
 }
 
 impl Part {
@@ -46,6 +49,7 @@ impl Part {
             Part::Drvs => 2,
             Part::Sources => 3,
             Part::Warnings => 4,
+            Part::NixConfig => 5,
         }
     }
 }

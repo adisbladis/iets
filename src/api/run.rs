@@ -96,6 +96,7 @@ impl Run {
         if !c.lookup() {
             return None;
         }
+        c.replay_nix_config();
         f(c)
     }
 

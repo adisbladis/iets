@@ -1118,6 +1118,24 @@ fn ignored_flags_and_settings() {
             && !e.contains("falling back"),
         &e,
     );
+    s.write("nn/flake.nix", "{\n  outputs = { self }: { x = 1; };\n}\n");
+    s.write(
+        "nn/flake.lock",
+        r#"{"nodes":{"root":{}},"root":"root","version":7}"#,
+    );
+    let nn = format!("path:{}#x", s.dir().join("nn").display());
+    let an = f.both(
+        "nix",
+        &["eval", "--accept-flake-config", "--eval-store", "auto", &nn],
+    );
+    c.same("--accept-flake-config, a flake with no nixConfig", &an);
+    let e = stderr(&an.ours);
+    c.check(
+        "--accept-flake-config without a nixConfig is no warning, as Nix does nothing",
+        !e.contains("accept-flake-config")
+            && once(&e, "'--eval-store' is ignored: iets evaluates in memory"),
+        &e,
+    );
     let aj = f
         .ours("nix")
         .args([
@@ -1125,8 +1143,7 @@ fn ignored_flags_and_settings() {
             "--log-format",
             "internal-json",
             "--accept-flake-config",
-            "--expr",
-            "1",
+            x.as_str(),
         ])
         .output()
         .unwrap();
@@ -1231,9 +1248,17 @@ fn ignored_flags_and_settings() {
     let e = stderr(&afc.ours);
     c.check(
         "a client setting iets has nothing for is one warning, a default none",
-        once(&e, "setting 'accept-flake-config' is ignored:")
-            && once(&e, "setting 'log-lines' is ignored:")
-            && e.lines().count() == 2,
+        once(&e, "setting 'log-lines' is ignored:") && e.lines().count() == 1,
+        &e,
+    );
+    let afx = f.both_with("nix", &["eval", &x], |c| {
+        c.env("NIX_CONFIG", "accept-flake-config = true");
+    });
+    c.same("accept-flake-config = true, a flake with a nixConfig", &afx);
+    let e = stderr(&afx.ours);
+    c.check(
+        "accept-flake-config is one warning once a flake has a nixConfig",
+        once(&e, "setting 'accept-flake-config' is ignored:") && e.lines().count() == 1,
         &e,
     );
     let local = s.write("local.txt", "local\n");

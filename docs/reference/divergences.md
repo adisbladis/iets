@@ -723,7 +723,11 @@ A flake that needs its `nixConfig` behaves differently:
   setting` warning.
 
 `--accept-flake-config` and `accept-flake-config = true` each give one
-warning that says so. Put the settings in `nix.conf` to get them.
+warning that says so when the top-level flake has a `nixConfig`. Put the
+settings in `nix.conf` to get them. Without a `nixConfig` Nix does nothing
+with them either, so iets says nothing. A cache hit gives the warning as
+the run it replays did; `nix-eval-jobs` gives it once, not once per
+worker.
 
 Observe it: `nix eval --accept-flake-config .#x` on a flake with
 `nixConfig.extra-substituters`. stdout and the exit code are Nix's, and
