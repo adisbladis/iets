@@ -23,6 +23,38 @@ fn eval_err(src: &str) -> String {
     eval_with(Evaluator::new(), src).expect_err("expected an error")
 }
 
+#[rstest]
+#[case::flat("a 0 30", "a 5 40")]
+#[case::few_in_union("a 3 6", "a 0 20 // b 0 400 // a 10 30 // c 0 50")]
+#[case::union_in_few("a 0 20 // b 0 400 // a 10 30 // c 0 50", "a 3 6 // b 7 9")]
+#[case::both_unions("a 0 40 // b 0 40 // c 5 9", "b 20 60 // a 30 35 // c 0 300")]
+#[case::disjoint("x 0 500", "a 0 20 // b 0 400 // c 0 50")]
+fn intersect_attrs_matches_a_filter(#[case] l: &str, #[case] r: &str) {
+    // "p i j" is the set p<k> = "<p>-<i>-<k>" for k in i..j, so `//` both
+    // overlaps and shadows; sets of 8 or more stay unions
+    let set = |spec: &str| {
+        spec.split(" // ")
+            .map(|s| {
+                let v: Vec<&str> = s.split(' ').collect();
+                format!(
+                    "(builtins.listToAttrs (builtins.genList (k: {{ name = \"{p}${{toString (k + {i})}}\"; value = \"{p}-{i}-${{toString k}}\"; }}) ({j} - {i})))",
+                    p = v[0],
+                    i = v[1],
+                    j = v[2]
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" // ")
+    };
+    let src = format!(
+        "let l = {}; r = {}; want = builtins.listToAttrs (map (n: {{ name = n; value = r.${{n}}; }}) (builtins.filter (n: l ? ${{n}}) (builtins.attrNames r))); got = builtins.intersectAttrs l r; in [ (got == want) (builtins.length (builtins.attrNames got)) ]",
+        set(l),
+        set(r)
+    );
+    let out = eval_str(&src);
+    assert!(out.starts_with("[ true "), "{out}");
+}
+
 #[test]
 fn arithmetic_and_strings() {
     assert_eq!(eval_str("1 + 2 * 3 - 4 / 2"), "5");
