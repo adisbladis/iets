@@ -60,7 +60,21 @@ impl Hasher for FxHasher {
 #[inline]
 pub fn fx_bytes(bytes: &[u8]) -> u64 {
     let mut h = FxHasher::default();
-    h.write(bytes);
+    // Four independent chains: one chain waits on a multiply per 8 bytes,
+    // and the dedup table hashes kilobyte builder scripts.
+    let (blocks, rest) = bytes.as_chunks::<32>();
+    if !blocks.is_empty() {
+        let mut l = [FxHasher::default(); 4];
+        for b in blocks {
+            for (h, w) in l.iter_mut().zip(b.as_chunks::<8>().0) {
+                h.add(u64::from_le_bytes(*w));
+            }
+        }
+        for x in l {
+            h.add(x.0);
+        }
+    }
+    h.write(rest);
     h.write_usize(bytes.len());
     h.finish()
 }
@@ -68,3 +82,31 @@ pub fn fx_bytes(bytes: &[u8]) -> u64 {
 pub type FxBuild = BuildHasherDefault<FxHasher>;
 pub type FxHashMap<K, V> = HashMap<K, V, FxBuild>;
 pub type FxHashSet<K> = HashSet<K, FxBuild>;
+
+#[cfg(test)]
+mod tests {
+    use super::fx_bytes;
+    use std::collections::HashSet;
+
+    #[test]
+    fn fx_bytes_sees_every_byte_and_its_place() {
+        // a byte changed at any place, including the four lanes and the
+        // tail, or words swapped between lanes, gives a new hash
+        let base: Vec<u8> = (0..100u8).collect();
+        let mut seen = HashSet::new();
+        assert!(seen.insert(fx_bytes(&base)));
+        for i in 0..base.len() {
+            let mut s = base.clone();
+            s[i] ^= 0x80;
+            assert!(seen.insert(fx_bytes(&s)), "byte {i}");
+        }
+        for (a, b) in [(0, 8), (8, 24), (0, 32)] {
+            let mut s = base.clone();
+            for k in 0..8 {
+                s.swap(a + k, b + k);
+            }
+            assert!(seen.insert(fx_bytes(&s)), "swap {a} {b}");
+        }
+        assert!(seen.insert(fx_bytes(&base[..99])));
+    }
+}
