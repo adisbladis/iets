@@ -1,6 +1,7 @@
 //! Value printers: the `nix-instantiate --eval` format (`printAmbiguous`),
 //! JSON (`printValueAsJSON`), and short forms for error messages.
 
+use crate::bytescan::Escapes;
 use std::str;
 
 use crate::eval::{self, Error, ErrorKind, EvalResult, Evaluator, Pos};
@@ -308,13 +309,11 @@ pub fn json_escape(out: &mut Vec<u8>, s: &[u8]) -> EvalResult<()> {
     })?;
     out.push(b'"');
     // Every byte that needs escaping is ASCII, so copy runs between them.
-    let mut rest = st.as_bytes();
-    while let Some(i) = rest
-        .iter()
-        .position(|&b| b < 0x20 || b == b'"' || b == b'\\')
-    {
-        out.extend_from_slice(&rest[..i]);
-        match rest[i] {
+    let s = st.as_bytes();
+    let mut done = 0;
+    for i in Escapes::Json.positions(s) {
+        out.extend_from_slice(&s[done..i]);
+        match s[i] {
             b'"' => out.extend_from_slice(b"\\\""),
             b'\\' => out.extend_from_slice(b"\\\\"),
             0x08 => out.extend_from_slice(b"\\b"),
@@ -324,9 +323,9 @@ pub fn json_escape(out: &mut Vec<u8>, s: &[u8]) -> EvalResult<()> {
             b'\t' => out.extend_from_slice(b"\\t"),
             c => out.extend_from_slice(format!("\\u{c:04x}").as_bytes()),
         }
-        rest = &rest[i + 1..];
+        done = i + 1;
     }
-    out.extend_from_slice(rest);
+    out.extend_from_slice(&s[done..]);
     out.push(b'"');
     Ok(())
 }
