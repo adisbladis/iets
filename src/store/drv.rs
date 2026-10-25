@@ -97,6 +97,23 @@ pub struct Derivation {
 pub struct DrvHash {
     pub hashes: BTreeMap<String, Hash>,
     pub kind: DrvHashKind,
+    /// Base16 of the hash when every output has the same one, as they do
+    /// but for a multi-output fixed derivation: encoded once here instead of
+    /// for every derivation that has this one as an input.
+    pub hex: Option<String>,
+}
+
+impl DrvHash {
+    fn new(hashes: BTreeMap<String, Hash>, kind: DrvHashKind) -> DrvHash {
+        let mut all = hashes.values();
+        let first = all.next();
+        let hex = first.filter(|f| all.all(|h| h == *f)).map(|f| {
+            let mut s = String::with_capacity(2 * f.bytes().len());
+            f.write_string_with(&mut s, HashFormat::Base16, false);
+            s
+        });
+        DrvHash { hashes, kind, hex }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -874,10 +891,7 @@ pub fn hash_derivation_modulo(
                 hash_bytes(HashAlgo::Sha256, payload.as_bytes()),
             );
         }
-        return Ok(Arc::new(DrvHash {
-            hashes,
-            kind: DrvHashKind::Regular,
-        }));
+        return Ok(Arc::new(DrvHash::new(hashes, DrvHashKind::Regular)));
     }
 
     let inputs = modulo_inputs(drv, cache, loader)?;
@@ -918,7 +932,7 @@ pub fn modulo_inputs(
     // nix drops `children` here: only the direct output names of each input go
     // through the modulo hash, so the nodes of `inputs2` are always flat
     let mut inputs2: BTreeMap<String, InputNode> = BTreeMap::new();
-    let mut hex = String::with_capacity(128);
+    let mut buf = String::with_capacity(128);
     for (drv_path, node) in &drv.input_drvs {
         let res = path_derivation_modulo(drv_path, cache, loader)?;
         if res.kind == DrvHashKind::Deferred {
@@ -931,13 +945,19 @@ pub fn modulo_inputs(
                     drv.name
                 ))
             })?;
-            hex.clear();
-            h.write_string_with(&mut hex, HashFormat::Base16, false);
+            let hex = match &res.hex {
+                Some(x) => x.as_str(),
+                None => {
+                    buf.clear();
+                    h.write_string_with(&mut buf, HashFormat::Base16, false);
+                    buf.as_str()
+                }
+            };
             // the same modulo hash covers every output of one input
-            match inputs2.get_mut(hex.as_str()) {
+            match inputs2.get_mut(hex) {
                 Some(v) => v.outputs.insert(output.clone()),
                 None => inputs2
-                    .entry(hex.clone())
+                    .entry(hex.to_string())
                     .or_default()
                     .outputs
                     .insert(output.clone()),
@@ -962,10 +982,7 @@ pub fn hash_derivation_modulo_with(
         Ok::<_, DrvError>(hash_bytes(HashAlgo::Sha256, s))
     })?;
     let hashes = drv.outputs.keys().map(|k| (k.clone(), hash)).collect();
-    Ok(Arc::new(DrvHash {
-        hashes,
-        kind: inputs.kind,
-    }))
+    Ok(Arc::new(DrvHash::new(hashes, inputs.kind)))
 }
 
 /// Mirrors derivations.cc:pathDerivationModulo (memoized by .drv path).

@@ -511,7 +511,10 @@ fn derivation_strict_internal(
 
     if let Some(mut json) = json {
         json.push(b'}');
-        drv.structured_attrs = Some(utf8(&json, pos)?);
+        debug_assert!(str::from_utf8(&json).is_ok());
+        // SAFETY: print_json wrote only ASCII and strings json_escape
+        // checked to be UTF-8, so a second pass over the text is not needed.
+        drv.structured_attrs = Some(unsafe { String::from_utf8_unchecked(json) });
     }
 
     context.sort();
