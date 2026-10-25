@@ -9,6 +9,18 @@ use std::arch::x86_64::{
     _mm_set1_epi8,
 };
 
+#[cfg(target_arch = "aarch64")]
+use std::arch::aarch64::{
+    vceqq_u8, vcltq_u8, vdupq_n_u8, vget_lane_u64, vld1q_u8, vorrq_u8, vreinterpret_u64_u8,
+    vreinterpretq_u16_u8, vshrn_n_u16,
+};
+
+/// Mask bits per byte: `movemask` gives one, NEON's narrowing shift four.
+#[cfg(target_arch = "aarch64")]
+const BITS: u32 = 4;
+#[cfg(not(target_arch = "aarch64"))]
+const BITS: u32 = 1;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Escapes {
     /// `"`, `\`, `\t`, `\n`, `\r` (derivations.cc:printString)
@@ -26,7 +38,7 @@ impl Escapes {
     }
 
     #[cfg(target_arch = "x86_64")]
-    fn mask(self, block: &[u8; 16]) -> u32 {
+    fn mask(self, block: &[u8; 16]) -> u64 {
         // SAFETY: SSE2 is part of x86_64; the load is unaligned and reads
         // exactly the 16 bytes of `block`.
         unsafe {
@@ -44,16 +56,36 @@ impl Escapes {
                     _mm_cmpeq_epi8(_mm_min_epu8(x, _mm_set1_epi8(0x1f)), x),
                 ),
             };
-            _mm_movemask_epi8(m) as u32
+            u64::from(_mm_movemask_epi8(m) as u16)
         }
     }
 
-    #[cfg(not(target_arch = "x86_64"))]
-    fn mask(self, block: &[u8; 16]) -> u32 {
+    #[cfg(target_arch = "aarch64")]
+    fn mask(self, block: &[u8; 16]) -> u64 {
+        // SAFETY: NEON is part of aarch64; the load reads exactly the 16
+        // bytes of `block`.
+        unsafe {
+            let x = vld1q_u8(block.as_ptr());
+            let eq = |c: u8| vceqq_u8(x, vdupq_n_u8(c));
+            let quote = vorrq_u8(eq(b'"'), eq(b'\\'));
+            let m = match self {
+                Escapes::Aterm => {
+                    vorrq_u8(quote, vorrq_u8(eq(b'\t'), vorrq_u8(eq(b'\n'), eq(b'\r'))))
+                }
+                Escapes::Json => vorrq_u8(quote, vcltq_u8(x, vdupq_n_u8(0x20))),
+            };
+            // byte k of `m` becomes nibble k; keep one bit of each
+            let nibbles = vshrn_n_u16::<4>(vreinterpretq_u16_u8(m));
+            vget_lane_u64::<0>(vreinterpret_u64_u8(nibbles)) & 0x8888_8888_8888_8888
+        }
+    }
+
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    fn mask(self, block: &[u8; 16]) -> u64 {
         block
             .iter()
             .enumerate()
-            .fold(0, |m, (i, &b)| m | (u32::from(self.hit(b)) << i))
+            .fold(0, |m, (i, &b)| m | (u64::from(self.hit(b)) << i))
     }
 
     /// Ascending positions in `s` of the bytes to escape.
@@ -75,7 +107,7 @@ pub struct Positions<'a> {
     next: usize,
     /// start of the block `bits` belongs to
     base: usize,
-    bits: u32,
+    bits: u64,
 }
 
 impl Iterator for Positions<'_> {
@@ -84,7 +116,7 @@ impl Iterator for Positions<'_> {
     fn next(&mut self) -> Option<usize> {
         loop {
             if self.bits != 0 {
-                let i = self.base + self.bits.trailing_zeros() as usize;
+                let i = self.base + (self.bits.trailing_zeros() / BITS) as usize;
                 self.bits &= self.bits - 1;
                 return Some(i);
             }
