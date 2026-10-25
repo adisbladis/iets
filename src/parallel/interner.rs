@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::process;
 use std::str::from_utf8;
-use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use crate::runtime::heap::Heap;
@@ -67,6 +67,9 @@ struct Inner {
     /// `names[id]` points at a name in `heap`. Written once,
     /// before the id is published through a shard.
     names: *mut AtomicPtr<&'static [u8]>,
+    /// `prefixes[id]`: [`prefix`] of the name, stored with it, so sorting
+    /// by name compares integers in one dense table.
+    prefixes: *mut AtomicU64,
     next: AtomicU32,
     /// The session memory the names live in: a `Sym`'s name outlives this
     /// table and lives as long as the session's values.
@@ -76,6 +79,7 @@ struct Inner {
 impl Drop for Inner {
     fn drop(&mut self) {
         unmap_per_sym(self.names);
+        unmap_per_sym(self.prefixes);
     }
 }
 
@@ -135,6 +139,15 @@ pub(super) fn unmap_per_sym<T>(p: *mut T) {
     unsafe { vm::unmap(p.cast(), MAX_SYMS * size_of::<T>()) };
 }
 
+/// The first 8 bytes of `name`, big-endian and zero-padded: two names in
+/// byte order have prefixes in the same order or equal ones.
+fn prefix(name: &[u8]) -> u64 {
+    let mut p = [0u8; 8];
+    let n = name.len().min(8);
+    p[..n].copy_from_slice(&name[..n]);
+    u64::from_be_bytes(p)
+}
+
 /// `MAX_SYMS` zeroed `T`s, paged in on demand, unmapped by the owner's drop.
 pub(super) fn per_sym<T>() -> *mut T {
     vm::map(MAX_SYMS * size_of::<T>(), true)
@@ -156,6 +169,7 @@ impl Interner {
                     .map(|_| RwLock::new(HashMap::with_hasher(MixBuild::default())))
                     .collect(),
                 names,
+                prefixes: per_sym(),
                 next: AtomicU32::new(0),
                 heap,
             }),
@@ -204,8 +218,12 @@ impl Interner {
         let entry = self.shared.heap.alloc(size_of::<&[u8]>()) as *mut &'static [u8];
         // SAFETY: fresh, aligned and sized for one slice reference.
         unsafe { entry.write(leaked) };
-        // SAFETY: id < MAX_SYMS indexes the mapping.
-        unsafe { (*self.shared.names.add(id as usize)).store(entry, Ordering::Release) };
+        // SAFETY: id < MAX_SYMS indexes the mappings. The prefix is stored
+        // first, so the release of the name publishes it too.
+        unsafe {
+            (*self.shared.prefixes.add(id as usize)).store(prefix(name), Ordering::Relaxed);
+            (*self.shared.names.add(id as usize)).store(entry, Ordering::Release);
+        }
         w.insert(leaked, Sym(id));
         (leaked, Sym(id))
     }
@@ -229,6 +247,16 @@ impl Interner {
         }
     }
 
+    /// The order of names by bytes, as far as their first 8 bytes decide
+    /// it; on a tie, compare the names.
+    #[inline]
+    pub fn prefix(&self, s: Sym) -> u64 {
+        assert!((s.0 as usize) < MAX_SYMS);
+        // SAFETY: as in `name`; the prefix was stored before the id was
+        // published.
+        unsafe { (*self.shared.prefixes.add(s.0 as usize)).load(Ordering::Relaxed) }
+    }
+
     pub fn name_str(&self, s: Sym) -> &'static str {
         from_utf8(self.name(s)).unwrap_or("<non-utf8>")
     }
@@ -247,6 +275,32 @@ mod tests {
     use super::*;
 
     use std::thread;
+
+    /// A prefix never contradicts byte order: ordering by prefix, then by
+    /// name on a tie, is ordering by name.
+    #[test]
+    fn prefix_order_agrees_with_byte_order() {
+        let mut i = Interner::new();
+        let names: [&[u8]; 10] = [
+            b"",
+            b"a",
+            b"a\0",
+            b"a\0b",
+            b"ab",
+            b"abcdefgh",
+            b"abcdefghi",
+            b"abcdefgg",
+            b"\xff",
+            b"B",
+        ];
+        let syms: Vec<Sym> = names.iter().map(|n| i.intern(n)).collect();
+        for (&x, &a) in names.iter().zip(&syms) {
+            for (&y, &b) in names.iter().zip(&syms) {
+                let by_prefix = i.prefix(a).cmp(&i.prefix(b)).then_with(|| x.cmp(y));
+                assert_eq!(by_prefix, x.cmp(y), "{x:?} vs {y:?}");
+            }
+        }
+    }
 
     #[test]
     fn intern_is_stable_and_shared() {
