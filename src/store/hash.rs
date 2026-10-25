@@ -405,9 +405,13 @@ const HEX: &[u8; 16] = b"0123456789abcdef";
 
 /// Mirrors base-n.cc:base16::encode, appended to a buffer the caller keeps.
 pub fn base16_encode_into(s: &mut String, bytes: &[u8]) {
-    for b in bytes {
-        s.push(HEX[(b >> 4) as usize] as char);
-        s.push(HEX[(b & 0xf) as usize] as char);
+    let mut buf = [0u8; 128];
+    for chunk in bytes.chunks(buf.len() / 2) {
+        for (i, b) in chunk.iter().enumerate() {
+            buf[2 * i] = HEX[(b >> 4) as usize];
+            buf[2 * i + 1] = HEX[(b & 0xf) as usize];
+        }
+        s.push_str(str::from_utf8(&buf[..2 * chunk.len()]).expect("hex digits are ASCII"));
     }
 }
 
