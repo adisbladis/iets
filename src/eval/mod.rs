@@ -391,7 +391,7 @@ impl SharedMap<StorePath, Known> {
 
 macro_rules! bail {
     ($kind:expr, $pos:expr, $($arg:tt)*) => {
-        return Err($crate::eval::Error::boxed($kind, format!($($arg)*), $pos))
+        return Err($crate::eval::Error::boxed_fmt($kind, format_args!($($arg)*), $pos))
     };
 }
 use crate::sys;

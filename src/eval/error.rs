@@ -1,4 +1,5 @@
 use crate::store::hash::Hash;
+use std::fmt;
 
 /// Byte offset into the concatenation of all loaded sources; the evaluator
 /// maps it back to a file and a local offset. 4 bytes so `Attr` and every IR
@@ -88,8 +89,18 @@ impl Error {
         }
     }
 
+    #[cold]
+    #[inline(never)]
     pub fn boxed(kind: ErrorKind, msg: impl Into<String>, pos: Pos) -> Box<Error> {
         Box::new(Error::new(kind, msg.into(), pos))
+    }
+
+    /// `boxed` for `bail!`: the message is formatted here, out of line, so
+    /// the hot callers keep only the arguments in their code.
+    #[cold]
+    #[inline(never)]
+    pub fn boxed_fmt(kind: ErrorKind, args: fmt::Arguments<'_>, pos: Pos) -> Box<Error> {
+        Box::new(Error::new(kind, fmt::format(args), pos))
     }
 
     pub fn stack_overflow(pos: Pos) -> Box<Error> {
