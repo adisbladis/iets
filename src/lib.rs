@@ -11,6 +11,7 @@ pub mod api;
 pub mod argv;
 pub mod build;
 pub mod builtins;
+pub mod bytescan;
 pub mod cachefs;
 pub mod cli;
 pub mod compile;

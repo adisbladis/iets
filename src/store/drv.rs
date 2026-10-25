@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::{error, fmt, fs, mem, str};
 
+use crate::bytescan::Escapes;
 use crate::syntax::symbol::FxHashMap;
 
 use super::hash::{
@@ -165,45 +166,19 @@ fn print_string(out: &mut Vec<u8>, s: &[u8]) {
 }
 
 fn escape_into(out: &mut Vec<u8>, s: &[u8]) {
-    let mut rest = s;
-    while let Some(i) = find_escape(rest) {
-        out.extend_from_slice(&rest[..i]);
-        out.push_str(match rest[i] {
+    let mut done = 0;
+    for i in Escapes::Aterm.positions(s) {
+        out.extend_from_slice(&s[done..i]);
+        out.push_str(match s[i] {
             b'"' => "\\\"",
             b'\\' => "\\\\",
             b'\n' => "\\n",
             b'\r' => "\\r",
             _ => "\\t",
         });
-        rest = &rest[i + 1..];
+        done = i + 1;
     }
-    out.extend_from_slice(rest);
-}
-
-fn find_escape(s: &[u8]) -> Option<usize> {
-    const LO: u64 = u64::from_ne_bytes([1; 8]);
-    const HI: u64 = LO << 7;
-    let escaped = |b: &u8| matches!(b, b'"' | b'\\' | b'\n' | b'\r' | b'\t');
-    let (chunks, rest) = s.as_chunks::<8>();
-    for (n, c) in chunks.iter().enumerate() {
-        let x = u64::from_ne_bytes(*c);
-        let q = x ^ (LO * b'"' as u64);
-        let b = x ^ (LO * b'\\' as u64);
-        // nonzero iff a byte is '"', '\\' or below 0x0e, the range of
-        // '\t', '\n' and '\r'
-        let any = ((x.wrapping_sub(LO * 0x0e) & !x)
-            | (q.wrapping_sub(LO) & !q)
-            | (b.wrapping_sub(LO) & !b))
-            & HI;
-        if any != 0
-            && let Some(i) = c.iter().position(escaped)
-        {
-            return Some(n * 8 + i);
-        }
-    }
-    rest.iter()
-        .position(escaped)
-        .map(|i| s.len() - rest.len() + i)
+    out.extend_from_slice(&s[done..]);
 }
 
 /// Mirrors derivations.cc:printUnquotedString (no escaping; for store paths and names).
@@ -1436,36 +1411,6 @@ mod tests {
             .string()
             .is_err()
         );
-    }
-
-    #[test]
-    fn find_escape_finds_the_first_byte_to_escape() {
-        let slow = |s: &[u8]| {
-            s.iter()
-                .position(|b| matches!(b, b'"' | b'\\' | b'\n' | b'\r' | b'\t'))
-        };
-        let mut s = [b'a'; 24];
-        for at in 0..s.len() {
-            for b in 0..=255u8 {
-                s[at] = b;
-                for end in at..=s.len() {
-                    assert_eq!(find_escape(&s[..end]), slow(&s[..end]), "{b:#x} at {at}");
-                }
-            }
-            s[at] = 0xff;
-        }
-        let mut x = 1u64;
-        for _ in 0..10_000 {
-            let s: Vec<u8> = (0..x % 40)
-                .map(|_| {
-                    x = x
-                        .wrapping_mul(6364136223846793005)
-                        .wrapping_add(1442695040888963407);
-                    (x >> 56) as u8
-                })
-                .collect();
-            assert_eq!(find_escape(&s), slow(&s));
-        }
     }
 
     #[test]
