@@ -167,8 +167,27 @@ pub struct StringObj {
     pub kind: Kind,
     /// Census only (`stats2`): set once the string was viewed.
     pub flags: u8,
+    /// The symbol of `bytes` plus one, 0 until first asked for
+    /// (`Evaluator::force_sym`); it fills padding, the object stays 5 words.
+    pub sym: AtomicU32,
     pub bytes: &'static [u8],
     pub ctx: &'static [Ctx],
+}
+
+const _: () = assert!(size_of::<StringObj>() == 40);
+
+impl StringObj {
+    #[inline]
+    pub(crate) fn cached_sym(&self) -> Option<Sym> {
+        self.sym.load(Ordering::Relaxed).checked_sub(1).map(Sym)
+    }
+
+    /// Every worker that asks computes the same symbol for the same
+    /// content, so a racing store is harmless.
+    #[inline]
+    pub(crate) fn cache_sym(&self, sym: Sym) {
+        self.sym.store(sym.0 + 1, Ordering::Relaxed);
+    }
 }
 
 #[repr(C)]
@@ -979,6 +998,7 @@ impl Arena {
         let s = self.alloc(StringObj {
             kind: Kind::String,
             flags: 0,
+            sym: AtomicU32::new(0),
             bytes,
             ctx,
         });
