@@ -477,9 +477,10 @@ fn derivation_strict_internal(
         if attr.sym == s.ignore_nulls {
             continue;
         }
-        let key = utf8(ev.interner.name(attr.sym), pos)?;
+        let key = str::from_utf8(ev.interner.name(attr.sym))
+            .map_err(|_| Error::boxed(ErrorKind::Eval, "string is not valid UTF-8", pos))?;
         let before = b.context.len();
-        process_attr(ev, &mut b, attr.sym, &key, attr.cell.get(), pos, attr.pos).map_err(
+        process_attr(ev, &mut b, attr.sym, key, attr.cell.get(), pos, attr.pos).map_err(
             |mut e| {
                 e.add_trace(
                     attr.pos,
@@ -492,7 +493,7 @@ fn derivation_strict_internal(
         if ctx.iter().any(|c| !c.is_store()) {
             let fallback = fallback(ev);
             let site = coerce::drv_attr_pos(ev, attr.pos, fallback);
-            purity::marks_in_drv(ev, drv_name, &key, ctx, site, attr.pos)?;
+            purity::marks_in_drv(ev, drv_name, key, ctx, site, attr.pos)?;
         }
     }
 
