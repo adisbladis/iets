@@ -182,7 +182,7 @@ impl Line {
             .map_err(|e| Error::Protocol(format!("'outputs': {e}")))?;
         let outputs = outputs
             .into_iter()
-            .map(|(k, v)| Ok((k, v.map(&parse_path).transpose()?)))
+            .map(|(k, v)| Ok((k, v.map(parse_path).transpose()?)))
             .collect::<Result<_>>()?;
         let constituents = take_strs(&mut map, "constituents")?
             .into_iter()
