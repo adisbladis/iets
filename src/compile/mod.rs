@@ -43,6 +43,9 @@ pub struct Compiler<'a> {
     /// Open lambdas, innermost last: the index in `scopes` of the param
     /// frame and whether the body has read a variable from outside it.
     lambdas: Vec<(usize, Cell<bool>)>,
+    /// Sorted start offsets of each symbol's `Var`s and `inherit` names,
+    /// built on the file's first `x: e`.
+    var_uses: Option<FxHashMap<Sym, Vec<u32>>>,
     /// Directory of the file being compiled, for relative paths.
     base_dir: Vec<u8>,
     /// Global offset of this file's first byte.
@@ -65,6 +68,27 @@ type CResult<T> = Result<T, Box<Error>>;
 
 fn err<T>(kind: ErrorKind, msg: String, pos: Pos) -> CResult<T> {
     Err(Box::new(Error::new(kind, msg, pos)))
+}
+
+/// Every variable reference is a `Var` or an `inherit` name.
+fn var_uses(ast: &Ast) -> FxHashMap<Sym, Vec<u32>> {
+    let vars = ast
+        .exprs
+        .iter()
+        .zip(&ast.spans)
+        .filter_map(|(e, s)| match e {
+            Expr::Var(v) => Some((*v, s)),
+            _ => None,
+        });
+    let inherits = ast.names.iter().map(|(v, s)| (*v, s));
+    let mut m: FxHashMap<Sym, Vec<u32>> = FxHashMap::default();
+    for (v, s) in vars.chain(inherits) {
+        m.entry(v).or_default().push(s.start);
+    }
+    for v in m.values_mut() {
+        v.sort_unstable();
+    }
+    m
 }
 
 /// Intermediate attrpath-merged binding tree, mirroring Nix's `addAttr`.
@@ -136,6 +160,7 @@ impl<'a> Compiler<'a> {
             globals,
             scopes: Vec::new(),
             lambdas: Vec::new(),
+            var_uses: None,
             base_dir: base_dir.to_vec(),
             base,
             home: env::var_os("HOME").map(|h| h.into_encoded_bytes()),
@@ -1120,6 +1145,22 @@ impl<'a> Compiler<'a> {
         self.expr(e)
     }
 
+    /// Whether `body` may read the variable `sym`. Desugared syntax reads
+    /// `__`-names without naming them (`<p>` reads `__findFile`), so those
+    /// always count.
+    fn named_in(&mut self, sym: Sym, body: ExprId) -> bool {
+        if self.interner.name(sym).starts_with(b"__") {
+            return true;
+        }
+        let ast: &'a Ast = self.ast;
+        let span = ast.span(body);
+        let uses = self.var_uses.get_or_insert_with(|| var_uses(ast));
+        uses.get(&sym).is_some_and(|v| {
+            let i = v.partition_point(|&p| p < span.start);
+            v.get(i).is_some_and(|&p| p < span.end)
+        })
+    }
+
     fn lambda(
         &mut self,
         param: Param,
@@ -1131,12 +1172,17 @@ impl<'a> Compiler<'a> {
         let ast: &'a Ast = self.ast;
         match param {
             Param::Ident(sym) => {
-                let mut m = FxHashMap::default();
-                m.insert(sym, 0);
+                let named = self.named_in(sym, body);
                 self.lambdas.push((self.scopes.len(), Cell::new(false)));
-                self.scopes.push(Scope::Lexical(m));
+                if named {
+                    let mut m = FxHashMap::default();
+                    m.insert(sym, 0);
+                    self.scopes.push(Scope::Lexical(m));
+                }
                 let body = self.expr(body)?;
-                self.scopes.pop();
+                if named {
+                    self.scopes.pop();
+                }
                 let closed = !self.lambdas.pop().unwrap().1.get();
                 Ok(self.alloc(LambdaIr {
                     param: ParamIr::Ident,
@@ -1145,6 +1191,7 @@ impl<'a> Compiler<'a> {
                     name,
                     arg: Some(sym),
                     closed,
+                    no_env: !named,
                 }))
             }
             Param::Formals {
@@ -1215,6 +1262,7 @@ impl<'a> Compiler<'a> {
                     name,
                     arg: bind,
                     closed,
+                    no_env: false,
                 }))
             }
         }

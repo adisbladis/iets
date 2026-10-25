@@ -154,6 +154,9 @@ pub struct LambdaIr {
     /// The body reads no variable of an enclosing scope (no `Local` above
     /// its own frame, no `with` variable), so every closure of it is alike.
     pub closed: bool,
+    /// `x: e` where `e` never names `x`: the body has no frame for `x` and
+    /// runs in the closure's env.
+    pub no_env: bool,
 }
 
 pub enum ParamIr {

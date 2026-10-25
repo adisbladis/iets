@@ -35,7 +35,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 use std::{fs, slice};
 
-const MAGIC: &[u8; 8] = b"IETS_IR2";
+const MAGIC: &[u8; 8] = b"IETS_IR3";
 
 pub struct IrCache {
     root: PathBuf,
@@ -475,7 +475,8 @@ impl Ser {
             Ir::Lambda(l) => {
                 self.out.push(11);
                 match &l.param {
-                    ParamIr::Ident => self.out.push(0),
+                    // 2: `no_env`, no frame
+                    ParamIr::Ident => self.out.push(if l.no_env { 2 } else { 0 }),
                     ParamIr::Formals {
                         has_bind,
                         formals,
@@ -1133,8 +1134,12 @@ impl<'a> De<'a, '_> {
             }
             10 => Ir::List(self.nodes()),
             11 => {
-                let param = if self.u8() == 0 {
-                    self.frames.push(Self::plain(1, false));
+                let tag = self.u8();
+                let framed = tag != 2;
+                let param = if tag != 1 {
+                    if framed {
+                        self.frames.push(Self::plain(1, false));
+                    }
                     ParamIr::Ident
                 } else {
                     let has_bind = self.u8() != 0;
@@ -1184,7 +1189,9 @@ impl<'a> De<'a, '_> {
                     }
                 };
                 let body = self.node();
-                self.frames.pop();
+                if framed {
+                    self.frames.pop();
+                }
                 let pos = self.pos();
                 let name = self.opt_sym();
                 let arg = self.opt_sym();
@@ -1196,6 +1203,7 @@ impl<'a> De<'a, '_> {
                     name,
                     arg,
                     closed,
+                    no_env: !framed,
                 }))
             }
             12 => {
@@ -1330,13 +1338,11 @@ mod tests {
 
         // a constant word of 8 under tag 0 must not reach the evaluator as
         // a pointer
-        assert!(!loads(b"IETS_IR2\x00\x00\x00\x08\x00\x00"));
+        assert!(!loads(&[&MAGIC[..], b"\x00\x00\x00\x08\x00\x00"].concat()));
         for w in 0u8..64 {
             // names=0, node tag 0 (a constant), word tag 0, the word, then
             // no warnings and no allow lines
-            let b = [
-                b'I', b'E', b'T', b'S', b'_', b'I', b'R', b'2', 0, 0, 0, w, 0, 0,
-            ];
+            let b = [&MAGIC[..], &[0, 0, 0, w, 0, 0]].concat();
             let ok = loads(&b);
             let imm = Word::imm_from_bits(u64::from(w)).is_some();
             assert_eq!(ok, imm, "tag 0 word {w}");

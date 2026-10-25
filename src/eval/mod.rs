@@ -1672,6 +1672,9 @@ impl Evaluator {
         arg: Word,
         pos: Pos,
     ) -> EvalResult<&'static EnvObj> {
+        if lam.no_env {
+            return Ok(fenv);
+        }
         let env2 = self.arena.alloc_env(Some(fenv), lam.nslots());
         let slots = env2.slots_n(lam.nslots());
         match &lam.param {

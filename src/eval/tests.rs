@@ -54,6 +54,18 @@ fn intersect_attrs_matches_a_filter(#[case] l: &str, #[case] r: &str) {
     let out = eval_str(&src);
     assert!(out.starts_with("[ true "), "{out}");
 }
+#[rstest]
+#[case::ignored(r#"(x: 1) (throw "never")"#, "1")]
+#[case::curried("(a: _: b: [ a b ]) 1 2 3", "[ 1 3 ]")]
+#[case::reads_outer("let f = a: _: a; in f 1 2", "1")]
+#[case::let_inside("(_: let a = 1; b = a; in b) 0", "1")]
+#[case::with_inside("with { y = 5; }; (x: y) 0", "5")]
+#[case::inherit("(x: { inherit x; }) 1", "{ x = 1; }")]
+#[case::interpolation(r#"(x: "${x}") "s""#, r#""s""#)]
+#[case::find_file(r#"(__findFile: <p>) (_: _: "found")"#, r#""found""#)]
+fn lambda_params_read_or_ignored(#[case] src: &str, #[case] want: &str) {
+    assert_eq!(eval_str(src), want);
+}
 
 #[test]
 fn arithmetic_and_strings() {
