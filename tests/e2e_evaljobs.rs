@@ -528,6 +528,49 @@ fn ignored_flags_warn_once(bin: Iets) {
     assert_eq!(warned, want);
 }
 
+/// `accept-flake-config` waits for a flake with a `nixConfig`, as nixbot
+/// passes it to every project. Only the workers evaluate the flake, so they
+/// tell the collector, and the warning comes once for all of them. Without
+/// a `nixConfig` it is none: Nix does nothing with the setting either.
+#[test]
+fn accept_flake_config_waits_for_a_nix_config() {
+    let Some(s) = Store::start_with(&[]) else {
+        return;
+    };
+    let warnings = |name: &str, nix_config: &str| -> usize {
+        let dir = s.dir().join(name);
+        fs::create_dir_all(&dir).unwrap();
+        let flake = format!(
+            "{{\n  {nix_config}\n  outputs = {{ self }}: {{\n    hydraJobs = {{\n      a = derivation {{ name = \"a\"; system = \"x86_64-linux\"; builder = \"/bin/sh\"; }};\n      b = derivation {{ name = \"b\"; system = \"x86_64-linux\"; builder = \"/bin/sh\"; }};\n    }};\n  }};\n}}\n"
+        );
+        fs::write(dir.join("flake.nix"), flake).unwrap();
+        fs::write(
+            dir.join("flake.lock"),
+            r#"{"nodes":{"root":{}},"root":"root","version":7}"#,
+        )
+        .unwrap();
+        let target = format!("{}#hydraJobs", dir.display());
+        let o = ok(s.iets().args([
+            "eval-jobs",
+            "--workers",
+            "2",
+            "--no-instantiate",
+            "--option",
+            "accept-flake-config",
+            "true",
+            "--flake",
+            target.as_str(),
+        ]));
+        stderr(&o)
+            .lines()
+            .filter(|l| l.starts_with("warning: setting 'accept-flake-config' is ignored:"))
+            .count()
+    };
+    assert_eq!(warnings("plain", ""), 0);
+    let nc = "nixConfig.extra-substituters = [ \"https://cache.invalid\" ];";
+    assert_eq!(warnings("nc", nc), 1);
+}
+
 /// `--iets-option` leaves the argv before any command sees it, so the
 /// collector puts it back for every worker. Only a worker that read
 /// `cache-dir` makes the directory.

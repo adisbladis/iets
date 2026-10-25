@@ -494,7 +494,11 @@ impl Config {
                 && !same_value(value, default)
             {
                 let raw = format!("setting '{name}' is ignored: {why}");
-                ignored::note("ignored-setting", name, raw);
+                if name == "accept-flake-config" {
+                    ignored::note_for_nix_config("ignored-setting", name, raw);
+                } else {
+                    ignored::note("ignored-setting", name, raw);
+                }
             }
         }
     }

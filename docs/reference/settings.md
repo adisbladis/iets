@@ -384,7 +384,9 @@ nix, which applies it (`iets: falling back to nix-build: the setting
 of a fallback: `accept-flake-config`, because a flake seldom has a
 `nixConfig`, and `log-lines`, which changes no result. The commands that
 cannot fall back, iets's own and `nix-eval-jobs`, give one warning per
-setting and process, with the reason:
+setting and process, with the reason. `accept-flake-config` waits for a
+top-level flake with a `nixConfig`: without one, Nix does nothing with it
+either.
 
 ```
 warning: setting 'restrict-eval' is ignored: iets has no restricted mode, so every path and URI stays readable

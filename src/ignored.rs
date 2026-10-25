@@ -4,6 +4,10 @@
 //! `unknown-setting`). A warning waits for `flush`, so
 //! a later `--log-format` still applies to it, as Nix warns only once every
 //! flag is read (common-args.cc:initialFlagsProcessed).
+//!
+//! `accept-flake-config` waits longer: Nix does nothing with it until a
+//! top-level flake has a `nixConfig`, so neither does iets's warning
+//! ([`nix_config_seen`]).
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -16,12 +20,15 @@ struct Note {
     key: String,
     raw: String,
     warned: bool,
+    for_nix_config: bool,
 }
 
-/// The notes of one run, and `hushed`. The session owns it.
+/// The notes of one run, `hushed`, and whether a top-level flake had a
+/// `nixConfig`. The session owns it.
 #[derive(Default)]
 pub struct Ignored {
     hushed: AtomicBool,
+    nix_config: AtomicBool,
     noted: Mutex<Vec<Note>>,
 }
 
@@ -32,8 +39,7 @@ pub fn hush() {
     s.ignored.hushed.store(true, Ordering::Relaxed);
 }
 
-/// Remembers the warning `raw`, once per `code` and `key`.
-pub fn note(code: &'static str, key: &str, raw: String) {
+fn push(code: &'static str, key: &str, raw: String, for_nix_config: bool) {
     let s = Session::current();
     let mut noted = s.ignored.noted.lock().unwrap_or_else(|e| e.into_inner());
     if !noted.iter().any(|n| n.code == code && n.key == key) {
@@ -42,8 +48,20 @@ pub fn note(code: &'static str, key: &str, raw: String) {
             key: key.to_string(),
             raw,
             warned: false,
+            for_nix_config,
         });
     }
+}
+
+/// Remembers the warning `raw`, once per `code` and `key`.
+pub fn note(code: &'static str, key: &str, raw: String) {
+    push(code, key, raw, false);
+}
+
+/// [`note`] for `accept-flake-config`: `flush` gives it only once
+/// [`nix_config_seen`] said a top-level flake has a `nixConfig`.
+pub fn note_for_nix_config(code: &'static str, key: &str, raw: String) {
+    push(code, key, raw, true);
 }
 
 /// `warning: 'FLAG' is ignored: WHY`, an `ignored-flag` record.
@@ -51,12 +69,36 @@ pub fn flag(flag: &str, why: &str) {
     note("ignored-flag", flag, format!("'{flag}' is ignored: {why}"));
 }
 
+/// [`flag`] for `--accept-flake-config`, which waits like
+/// [`note_for_nix_config`].
+pub fn flag_for_nix_config(flag: &str) {
+    let raw = format!("'{flag}' is ignored: {NO_NIX_CONFIG}");
+    note_for_nix_config("ignored-flag", flag, raw);
+}
+
+/// A top-level flake of this run has a `nixConfig`: the notes that waited
+/// for one are given now. An `eval-jobs` worker is hushed, so it tells its
+/// collector instead ([`nix_config_was_seen`]).
+pub fn nix_config_seen() {
+    let s = Session::current();
+    s.ignored.nix_config.store(true, Ordering::Relaxed);
+    flush();
+}
+
+/// Whether [`nix_config_seen`] was called in this run.
+pub fn nix_config_was_seen() -> bool {
+    let s = Session::current();
+    s.ignored.nix_config.load(Ordering::Relaxed)
+}
+
 /// Every note not yet given, in the order they were made.
 pub fn flush() {
     let s = Session::current();
     let hushed = s.ignored.hushed.load(Ordering::Relaxed);
+    let nix_config = s.ignored.nix_config.load(Ordering::Relaxed);
     let mut noted = s.ignored.noted.lock().unwrap_or_else(|e| e.into_inner());
-    for n in noted.iter_mut().filter(|n| !n.warned) {
+    let due = |n: &&mut Note| !n.warned && (nix_config || !n.for_nix_config);
+    for n in noted.iter_mut().filter(due) {
         n.warned = true;
         if !hushed {
             log::warning(n.code, n.raw.clone());

@@ -192,8 +192,9 @@ Flags: `--json`, `--raw`, `--expr E`, `-f`/`--file FILE`, `--impure`,
 - The experimental features decide whether `builtins` has `fetchTree`,
   `fetchClosure` and `outputOf`, as in Nix. `parse-toml-timestamps` falls
   back.
-- `--accept-flake-config` has no effect and gives one warning. iets never
-  applies a flake's `nixConfig` (`docs/reference/divergences.md`).
+- `--accept-flake-config` has no effect. It gives one warning when the
+  flake on the command line has a `nixConfig`, as iets never applies one
+  (`docs/reference/divergences.md`).
 
 The output is `nix eval`'s, which is not the same as
 `nix-instantiate --eval`'s:
@@ -514,8 +515,9 @@ these:
   switches the log format to `raw`. `--quiet` does the same here. In Nix it
   lowers the log level by one.
 - A flag or setting that has no effect gives one warning on stderr, where
-  Nix prints nothing: `-v`, `--accept-flake-config`, `--eval-store auto`,
-  `accept-flake-config = true` and `log-lines`. Any other client setting
+  Nix prints nothing: `-v`, `--eval-store auto` and `log-lines`, and
+  `--accept-flake-config` and `accept-flake-config = true` when the flake
+  has a `nixConfig`. Any other client setting
   that iets has nothing for (`restrict-eval`, `eval-system`, …) falls back.
   stdout and the exit code stay Nix's. `docs/reference/divergences.md`,
   **Flags and settings with no effect**, has the table and says what iets
