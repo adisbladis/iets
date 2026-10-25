@@ -511,17 +511,20 @@ fn derivation_strict_internal(
 
     if let Some(mut json) = json {
         json.push(b'}');
-        drv.structured_attrs = Some(utf8(&json, pos)?);
+        debug_assert!(str::from_utf8(&json).is_ok());
+        // SAFETY: print_json wrote only ASCII and strings json_escape
+        // checked to be UTF-8, so a second pass over the text is not needed.
+        drv.structured_attrs = Some(unsafe { String::from_utf8_unchecked(json) });
     }
 
     context.sort();
     context.dedup();
+    // one bulk build of the set instead of an insert per path
+    let mut srcs = Vec::new();
     for c in &context {
         match c {
             Ctx::Impure(_) => {}
-            Ctx::Opaque(p) => {
-                drv.input_srcs.insert(parse_store_path(p, pos)?);
-            }
+            Ctx::Opaque(p) => srcs.push(parse_store_path(p, pos)?),
             Ctx::Built { drv: d, output } => {
                 // derived-path-map.hh:DerivedPathMap::ensureSlot: one child per
                 // layer, from the `.drv` at the bottom outwards, and the output
@@ -539,7 +542,7 @@ fn derivation_strict_internal(
             Ctx::DrvDeep(d) => {
                 let d = parse_store_path(d, pos)?;
                 for (j, outputs) in drv_closure(ev, &d, pos)? {
-                    drv.input_srcs.insert(j.clone());
+                    srcs.push(j.clone());
                     if let Some(outputs) = outputs {
                         drv.input_drvs.insert(j, InputNode::of(outputs));
                     }
@@ -547,6 +550,7 @@ fn derivation_strict_internal(
             }
         }
     }
+    drv.input_srcs = srcs.into_iter().collect();
 
     if drv.builder.is_empty() {
         bail!(ErrorKind::Eval, pos, "required attribute 'builder' missing");
@@ -704,8 +708,9 @@ fn derivation_strict_internal(
     }
 
     // the inputs are not read after hashing
-    let mut references = mem::take(&mut drv.input_srcs);
-    references.extend(mem::take(&mut drv.input_drvs).into_keys());
+    let references = (mem::take(&mut drv.input_srcs).into_iter())
+        .chain(mem::take(&mut drv.input_drvs).into_keys())
+        .collect();
     // stdenv.mkDerivation computes `name` in make-derivation.nix but passes
     // the package's own `pname` through, as nixpkgs' meta.position does. A
     // name-only builder (runCommand) loses the caller's `name` binding the
@@ -949,8 +954,9 @@ fn drv_info(ev: &mut Evaluator, p: &StorePath, pos: Pos) -> EvalResult<DrvInfo> 
         return Ok(i);
     }
     let drv = load_drv_traced(ev.trace(), p).map_err(|e| drv_err(e, pos))?;
-    let mut references: BTreeSet<StorePath> = drv.input_srcs.clone();
-    references.extend(drv.input_drvs.keys().cloned());
+    let references = (drv.input_srcs.into_iter())
+        .chain(drv.input_drvs.into_keys())
+        .collect();
     let info = DrvInfo {
         outputs: drv.outputs.keys().cloned().collect(),
         references,
