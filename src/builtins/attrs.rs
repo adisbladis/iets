@@ -5,6 +5,7 @@ use crate::eval::{ErrorKind, EvalResult, Evaluator, Pos, bail};
 use crate::lint::purity;
 use crate::runtime::Word;
 use crate::runtime::arena::Stat;
+use crate::runtime::value::{Attr, for_each_leaf};
 use crate::syntax::symbol::{FxHashMap, FxHashSet, Sym};
 use crate::{parallel, print};
 
@@ -126,20 +127,59 @@ fn intersect_attrs(ev: &mut Evaluator, args: &[Word], pos: Pos) -> EvalResult<Wo
         "while evaluating the second argument passed to builtins.intersectAttrs",
     )?;
     let mut out: Vec<(Sym, Pos, Word)> = Vec::with_capacity(left.len().min(right.len()));
-    if left.len() < right.len() {
-        for l in left.iter() {
-            if let Some(r) = right.get(l.sym) {
-                out.push((r.sym, r.pos, r.cell.get()));
-            }
-        }
+    let left_small = left.len() < right.len();
+    let (small, big) = if left_small {
+        (left, right)
     } else {
-        for r in right.iter() {
-            if left.get(r.sym).is_some() {
+        (right, left)
+    };
+    if small.len() < 32 {
+        for k in small.iter() {
+            if let Some(b) = big.get(k.sym) {
+                let r = if left_small { b } else { k };
                 out.push((r.sym, r.pos, r.cell.get()));
             }
         }
+        return Ok(ev.arena.mk_attrs_sorted_as(&out, Stat::AttrsInter));
+    }
+    // One ordered walk per leaf of the big side instead of a binary search
+    // per key and leaf: nixpkgs intersects thousands of names with `pkgs`.
+    let keys: Vec<&Attr> = small.iter().collect();
+    let mut hit = vec![false; keys.len()];
+    for_each_leaf(big, |leaf| {
+        let mut rest = leaf.attrs_raw();
+        for (k, h) in keys.iter().zip(hit.iter_mut()) {
+            rest = &rest[gallop(rest, k.sym)..];
+            match rest.first() {
+                None => break,
+                Some(a) if a.sym == k.sym => *h = true,
+                Some(_) => {}
+            }
+        }
+    });
+    for (k, _) in keys.iter().zip(&hit).filter(|(_, h)| **h) {
+        // the value is the right side's, and a union's top leaf wins
+        let r = if left_small {
+            right.get(k.sym).expect("found in a leaf")
+        } else {
+            k
+        };
+        out.push((r.sym, r.pos, r.cell.get()));
     }
     Ok(ev.arena.mk_attrs_sorted_as(&out, Stat::AttrsInter))
+}
+
+/// Index of the first entry of the sorted `attrs` not below `sym`:
+/// exponential then binary search, so a walk over many keys stays linear in
+/// the larger side and a few keys stay logarithmic.
+fn gallop(attrs: &[Attr], sym: Sym) -> usize {
+    let mut hi = 1;
+    while hi < attrs.len() && attrs[hi - 1].sym < sym {
+        hi *= 2;
+    }
+    let lo = hi / 2;
+    let hi = hi.min(attrs.len());
+    lo + attrs[lo..hi].partition_point(|a| a.sym < sym)
 }
 
 fn map_attrs(ev: &mut Evaluator, args: &[Word], pos: Pos) -> EvalResult<Word> {
