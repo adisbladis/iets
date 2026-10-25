@@ -127,7 +127,9 @@ impl fmt::Debug for StorePath {
 
 impl fmt::Display for StorePath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}/{}", store_dir(), self.base_name)
+        f.write_str(store_dir())?;
+        f.write_str("/")?;
+        f.write_str(&self.base_name)
     }
 }
 

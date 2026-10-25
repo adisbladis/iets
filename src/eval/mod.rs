@@ -262,6 +262,9 @@ pub struct Evaluator {
     /// Locked `narHash` -> flake input name, from the lock file, for messages
     /// about an input that must be fetched.
     pub input_names: SharedMap<String, String>,
+    /// Project marker path -> present, for `lint::purity`: every path a
+    /// derivation holds walks its ancestors, which repeat across derivations.
+    pub project_markers: SharedMap<Vec<u8>, bool>,
     /// Lint levels (docs/reference/lints.md).
     lint_config: lint::Config,
     /// The warnings emitted so far.
@@ -603,6 +606,7 @@ impl EvalConfig {
             src_to_store: Default::default(),
             known: Default::default(),
             input_names: Default::default(),
+            project_markers: Default::default(),
             lint_config: self.lints,
             lints: Default::default(),
             drv: DrvState::new(self.keep_aterm, self.keep_site, self.dump_dir),

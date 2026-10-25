@@ -198,12 +198,13 @@ fn print_unquoted(out: &mut Vec<u8>, s: &str) {
 
 /// `print_unquoted` of `p.to_string()`, without the string.
 fn print_store_path(out: &mut Vec<u8>, p: &StorePath) {
-    // A Windows directory holds backslashes, which a string escapes
-    let mut full = Vec::new();
-    full.extend_from_slice(store_dir().as_bytes());
-    full.push(b'/');
-    full.extend_from_slice(p.base_name().as_bytes());
-    print_string(out, &full);
+    // A Windows directory holds backslashes, which a string escapes; a
+    // base name holds none of the escaped characters (`check_name`)
+    out.push(b'"');
+    escape_into(out, store_dir().as_bytes());
+    out.push(b'/');
+    out.extend_from_slice(p.base_name().as_bytes());
+    out.push(b'"');
 }
 
 /// Mirrors content-address.cc:ContentAddress::printMethodAlgo quoted:

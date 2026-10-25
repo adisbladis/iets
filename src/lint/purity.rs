@@ -118,12 +118,19 @@ pub fn dir_copy_unfiltered(ev: &mut Evaluator, path: &[u8], pos: Pos) -> EvalRes
 }
 
 /// The nearest project root at or above `path` (`crate::project`). Every
-/// probe is a `Stat` observation, so a new marker is a cache miss.
+/// probe is a `Stat` observation, so a new marker is a cache miss. A
+/// marker is probed once per evaluation; its observation is recorded then.
 fn project_root_of(ev: &Evaluator, path: &[u8]) -> Option<Vec<u8>> {
     let dir = compile::canon_path(path);
     let at = sys::path_from_internal(&dir);
     let root = project::find_with(&at, |m| {
-        ev.trace().stat_now(m.as_os_str().as_bytes(), true) != trace::Kind::Missing
+        let m = m.as_os_str().as_bytes();
+        if let Some(present) = ev.project_markers.get(m) {
+            return present;
+        }
+        let present = ev.trace().stat_now(m, true) != trace::Kind::Missing;
+        ev.project_markers.insert(m.to_vec(), present);
+        present
     })?;
     Some(sys::path_to_internal(&root))
 }
