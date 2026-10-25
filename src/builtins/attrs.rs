@@ -48,7 +48,7 @@ fn attr_values(ev: &mut Evaluator, args: &[Word], pos: Pos) -> EvalResult<Word> 
 }
 
 fn get_attr(ev: &mut Evaluator, args: &[Word], pos: Pos) -> EvalResult<Word> {
-    let name = ev.force_string_no_ctx(
+    let sym = ev.force_sym(
         args[0],
         pos,
         "while evaluating the first argument passed to builtins.getAttr",
@@ -58,7 +58,6 @@ fn get_attr(ev: &mut Evaluator, args: &[Word], pos: Pos) -> EvalResult<Word> {
         pos,
         "while evaluating the second argument passed to builtins.getAttr",
     )?;
-    let sym = ev.sym(name);
     match a.get(sym) {
         Some(attr) if sym == ev.s.rev_count => purity::count_read(ev, &attr.cell, pos),
         Some(attr) => ev.force_cell(&attr.cell),
@@ -66,13 +65,13 @@ fn get_attr(ev: &mut Evaluator, args: &[Word], pos: Pos) -> EvalResult<Word> {
             ErrorKind::MissingAttr,
             pos,
             "attribute '{}' missing",
-            String::from_utf8_lossy(name)
+            String::from_utf8_lossy(ev.interner.name(sym))
         ),
     }
 }
 
 fn has_attr(ev: &mut Evaluator, args: &[Word], pos: Pos) -> EvalResult<Word> {
-    let name = ev.force_string_no_ctx(
+    let sym = ev.force_sym(
         args[0],
         pos,
         "while evaluating the first argument passed to builtins.hasAttr",
@@ -82,7 +81,6 @@ fn has_attr(ev: &mut Evaluator, args: &[Word], pos: Pos) -> EvalResult<Word> {
         pos,
         "while evaluating the second argument passed to builtins.hasAttr",
     )?;
-    let sym = ev.sym(name);
     Ok(Word::from_bool(a.get(sym).is_some()))
 }
 
@@ -100,12 +98,11 @@ fn remove_attrs(ev: &mut Evaluator, args: &[Word], pos: Pos) -> EvalResult<Word>
     let mut names: Vec<Sym> = Vec::with_capacity(l.len as usize);
     for c in l.cells() {
         let w = c.get();
-        let n = ev.force_string_no_ctx(
+        names.push(ev.force_sym(
             w,
             pos,
             "while evaluating the values of the second argument passed to builtins.removeAttrs",
-        )?;
-        names.push(ev.sym(n));
+        )?);
     }
     names.sort();
     names.dedup();
@@ -190,12 +187,11 @@ fn list_to_attrs(ev: &mut Evaluator, args: &[Word], pos: Pos) -> EvalResult<Word
             );
         };
         let nv = n.cell.get();
-        let name = ev.force_string_no_ctx(
+        let sym = ev.force_sym(
             nv,
             n.pos,
             "while evaluating the `name` attribute of an element of the list passed to builtins.listToAttrs",
         )?;
-        let sym = ev.sym(name);
         if !seen.insert(sym) {
             continue;
         }
@@ -254,12 +250,11 @@ fn zip_attrs_with(ev: &mut Evaluator, args: &[Word], pos: Pos) -> EvalResult<Wor
 }
 
 fn cat_attrs(ev: &mut Evaluator, args: &[Word], pos: Pos) -> EvalResult<Word> {
-    let name = ev.force_string_no_ctx(
+    let sym = ev.force_sym(
         args[0],
         pos,
         "while evaluating the first argument passed to builtins.catAttrs",
     )?;
-    let sym = ev.sym(name);
     let l = ev.force_list(
         args[1],
         pos,
@@ -297,12 +292,11 @@ fn group_by(ev: &mut Evaluator, args: &[Word], pos: Pos) -> EvalResult<Word> {
     for c in l.cells() {
         let elem = c.get();
         let r = ev.call1(f, elem, pos)?;
-        let name = ev.force_string_no_ctx(
+        let sym = ev.force_sym(
             r,
             pos,
             "while evaluating the return value of the grouping function passed to builtins.groupBy",
         )?;
-        let sym = ev.sym(name);
         groups.entry(sym).or_default().push(elem);
     }
     let mut out: Vec<(Sym, Pos, Word)> = Vec::with_capacity(groups.len());

@@ -1380,6 +1380,15 @@ impl Evaluator {
         pos: Pos,
         ctx: &str,
     ) -> EvalResult<&'static [u8]> {
+        Ok(self.force_string_obj_no_ctx(w, pos, ctx)?.bytes)
+    }
+
+    fn force_string_obj_no_ctx(
+        &mut self,
+        w: Word,
+        pos: Pos,
+        ctx: &str,
+    ) -> EvalResult<&'static StringObj> {
         let s = self.force_string(w, pos, ctx)?;
         if let Some(first) = s.ctx.iter().find(|c| c.is_store()) {
             let mut e = Error::new(
@@ -1396,7 +1405,7 @@ impl Evaluator {
             }
             return Err(Box::new(e));
         }
-        Ok(s.bytes)
+        Ok(s)
     }
 
     pub fn force_function(&mut self, w: Word, pos: Pos, ctx: &str) -> EvalResult<Word> {
@@ -1459,6 +1468,19 @@ impl Evaluator {
         self.interner.intern(name)
     }
 
+    /// `force_string_no_ctx` as a symbol. The symbol is kept in the string
+    /// object: names passed again and again, such as the literals of a
+    /// `removeAttrs` call, are hashed once.
+    pub fn force_sym(&mut self, w: Word, pos: Pos, ctx: &str) -> EvalResult<Sym> {
+        let s = self.force_string_obj_no_ctx(w, pos, ctx)?;
+        if let Some(sym) = s.cached_sym() {
+            return Ok(sym);
+        }
+        let sym = self.interner.intern(s.bytes);
+        s.cache_sym(sym);
+        Ok(sym)
+    }
+
     /// The string value of a symbol's name. attrNames and mapAttrs hand
     /// out the same object for the same name instead of copying it.
     pub fn sym_string(&mut self, sym: Sym) -> Word {
@@ -1467,6 +1489,9 @@ impl Evaluator {
             return w;
         }
         let w = self.arena.mk_string(self.interner.name(sym));
+        if let Value::String(s) = w.view() {
+            s.cache_sym(sym);
+        }
         self.sym_strings.set(sym, w);
         w
     }
@@ -2031,9 +2056,7 @@ impl Evaluator {
             AttrElemIr::Dynamic(e) => {
                 let pos = ir_pos(e);
                 let v = self.eval(env, e)?;
-                let name =
-                    self.force_string_no_ctx(v, pos, "while evaluating an attribute name")?;
-                Ok(self.interner.intern(name))
+                self.force_sym(v, pos, "while evaluating an attribute name")
             }
         }
     }
