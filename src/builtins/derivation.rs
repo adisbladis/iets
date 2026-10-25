@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use std::fs::{self, File, Metadata};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::{io, str};
+use std::{io, mem, str};
 
 use super::text::json;
 use super::{Registry, store_hooks};
@@ -702,8 +702,9 @@ fn derivation_strict_internal(
         })?;
     }
 
-    let mut references: BTreeSet<StorePath> = drv.input_srcs.clone();
-    references.extend(drv.input_drvs.keys().cloned());
+    // the inputs are not read after hashing
+    let mut references = mem::take(&mut drv.input_srcs);
+    references.extend(mem::take(&mut drv.input_drvs).into_keys());
     // stdenv.mkDerivation computes `name` in make-derivation.nix but passes
     // the package's own `pname` through, as nixpkgs' meta.position does. A
     // name-only builder (runCommand) loses the caller's `name` binding the
