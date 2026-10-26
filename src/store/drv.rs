@@ -167,7 +167,7 @@ fn print_string(out: &mut Vec<u8>, s: &[u8]) {
 
 fn escape_into(out: &mut Vec<u8>, s: &[u8]) {
     let mut done = 0;
-    for i in Escapes::Aterm.positions(s) {
+    Escapes::Aterm.for_each(s, |i| {
         out.extend_from_slice(&s[done..i]);
         out.push_str(match s[i] {
             b'"' => "\\\"",
@@ -177,7 +177,7 @@ fn escape_into(out: &mut Vec<u8>, s: &[u8]) {
             _ => "\\t",
         });
         done = i + 1;
-    }
+    });
     out.extend_from_slice(&s[done..]);
 }
 
