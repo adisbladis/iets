@@ -98,6 +98,14 @@ After an upload, `tests/e2e_daemon.rs` checks that:
 - in the scratch store, the derivation has the same hash as in the local
   store, and every input source has the same `ca`.
 
+`tests/e2e_upload.rs` uploads paths the evaluation copied as roots of their
+own: a path in a string, `builtins.path` (a tree, and a file with
+`recursive = false`), `filterSource` and a `toFile` text. Each one is the
+store path Nix gives the same expression. After the upload it is valid, its
+`ca` has the right kind, its `narHash` is the hash of what the store holds,
+and its references are what the text names. A text is uploaded after the
+tree it names, also when only a derivation names the text.
+
 ## The `grpc://` transport
 
 The figures are from runs on the hello closure, with a release build.
