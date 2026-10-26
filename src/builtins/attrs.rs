@@ -126,14 +126,22 @@ fn intersect_attrs(ev: &mut Evaluator, args: &[Word], pos: Pos) -> EvalResult<Wo
         pos,
         "while evaluating the second argument passed to builtins.intersectAttrs",
     )?;
-    let mut out: Vec<(Sym, Pos, Word)> = Vec::with_capacity(left.len().min(right.len()));
-    let left_small = left.len() < right.len();
+    // `len` of a union iterates it, so compare bounds first
+    let (l, r) = (left.len_bounds(), right.len_bounds());
+    let left_small = if l.1 < r.0 {
+        true
+    } else if r.1 <= l.0 {
+        false
+    } else {
+        left.len() < right.len()
+    };
     let (small, big) = if left_small {
         (left, right)
     } else {
         (right, left)
     };
-    if small.len() < 32 {
+    let mut out: Vec<(Sym, Pos, Word)> = Vec::with_capacity(small.len_bounds().1);
+    if small.len_bounds().1 < 32 {
         for k in small.iter() {
             if let Some(b) = big.get(k.sym) {
                 let r = if left_small { b } else { k };
