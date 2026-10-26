@@ -221,6 +221,11 @@ never assemble an upload yourself. Given `api::build::Root` values,
 `Dispatch::realise` builds them and `Built::paths(roots)` returns the output
 paths.
 
+A root can also be a store path that the evaluation made by a copy, such as
+`"${./src}"` or a `builtins.toFile` text. `plan` and `upload_only` make it
+valid in the store, with the paths it names
+([Using iets as a library](../reference/library.md#make-a-copied-path-valid)).
+
 ## Read derivations
 
 `examples/drv_info.rs` lists every derivation a run created:
