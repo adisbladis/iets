@@ -82,6 +82,25 @@ fn lambda_params_read_or_ignored(#[case] src: &str, #[case] want: &str) {
     assert_eq!(eval_str(src), want);
 }
 
+/// `[ ]` and `{ }` compile to one value per site, which every evaluation
+/// and every caller shares.
+#[rstest]
+#[case::list_grows(
+    "let f = { a ? [ ] }: a ++ [ 1 ]; in [ (f { }) (f { }) ]",
+    "[ [ 1 ] [ 1 ] ]"
+)]
+#[case::attrs_grow(
+    "let f = x: { } // x; in [ (f { a = 1; }) (f { b = 2; }) ]",
+    "[ { a = 1; } { b = 2; } ]"
+)]
+#[case::equal("[ ([ ] == [ ]) ({ } == { }) (rec { } == { }) ]", "[ true true true ]")]
+#[case::types("map builtins.typeOf [ [ ] { } ]", r#"[ "list" "set" ]"#)]
+#[case::or_default("let s = { }; in (s.x or [ ]) ++ (s.y or [ 2 ])", "[ 2 ]")]
+#[case::dynamic_is_not_empty(r#"let n = "a"; in { ${n} = 1; }"#, "{ a = 1; }")]
+fn empty_literals(#[case] src: &str, #[case] want: &str) {
+    assert_eq!(eval_str(src), want);
+}
+
 #[test]
 fn arithmetic_and_strings() {
     assert_eq!(eval_str("1 + 2 * 3 - 4 / 2"), "5");
