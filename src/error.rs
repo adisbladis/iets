@@ -8,7 +8,7 @@ use crate::eval::error;
 use crate::log;
 use crate::store::drv::DrvError;
 use crate::store::hash::HashError;
-use crate::store::path::StorePathError;
+use crate::store::path::{StorePath, StorePathError};
 
 #[derive(Debug)]
 pub enum Error {
@@ -20,6 +20,9 @@ pub enum Error {
     /// nix-eval-jobs line, `nix path-info`, a dev-env dump.
     Protocol(String),
     Plan(String),
+    /// A root of an upload plan that is neither a derivation nor a store
+    /// path the evaluation added, so nothing says what to upload.
+    UnknownRoot(StorePath),
     /// Store path, derivation or hash.
     Store(String),
     Flake(String),
@@ -60,7 +63,7 @@ impl Error {
         match self {
             Error::Io { .. } => "io",
             Error::Protocol(_) => "protocol",
-            Error::Plan(_) => "plan",
+            Error::Plan(_) | Error::UnknownRoot(_) => "plan",
             Error::Store(_) => "store",
             Error::Flake(_) => "flake",
             Error::Cache(_) => "cache",
@@ -103,6 +106,10 @@ impl fmt::Display for Error {
             | Error::Unsupported(m)
             | Error::Usage(m)
             | Error::Config(m) => f.write_str(m),
+            Error::UnknownRoot(p) => write!(
+                f,
+                "cannot plan '{p}': it is neither a derivation nor a path this evaluation added to the store"
+            ),
             Error::Eval(e) => f.write_str(&e.msg),
             Error::Hint(e, _) => e.fmt(f),
         }
