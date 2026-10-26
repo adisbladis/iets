@@ -1250,7 +1250,11 @@ fn strip_indentation(
     for p in parts {
         match p {
             IndPart::Src(s, e) => {
-                for &b in &src[*s as usize..*e as usize] {
+                let seg = &src[*s as usize..*e as usize];
+                let mut k = 0;
+                while k < seg.len() {
+                    let b = seg[k];
+                    k += 1;
                     if at_start {
                         if b == b' ' {
                             cur_indent += 1;
@@ -1260,7 +1264,13 @@ fn strip_indentation(
                             at_start = false;
                             min_indent = min_indent.min(cur_indent);
                         }
-                    } else if b == b'\n' {
+                    } else {
+                        if b != b'\n' {
+                            match memchr::memchr(b'\n', &seg[k..]) {
+                                Some(j) => k += j + 1,
+                                None => break,
+                            }
+                        }
                         at_start = true;
                         cur_indent = 0;
                     }
@@ -1347,8 +1357,11 @@ fn trim_into(
     at_start: &mut bool,
     cur_dropped: &mut usize,
 ) {
-    for &b in bytes {
+    let mut k = 0;
+    while k < bytes.len() {
         if *at_start {
+            let b = bytes[k];
+            k += 1;
             if b == b' ' {
                 if *cur_dropped >= min_indent {
                     out.push(b);
@@ -1363,10 +1376,10 @@ fn trim_into(
                 out.push(b);
             }
         } else {
-            out.push(b);
-            if b == b'\n' {
-                *at_start = true;
-            }
+            let end = memchr::memchr(b'\n', &bytes[k..]).map_or(bytes.len(), |j| k + j + 1);
+            out.extend_from_slice(&bytes[k..end]);
+            *at_start = bytes[end - 1] == b'\n';
+            k = end;
         }
     }
 }
@@ -1571,6 +1584,43 @@ impl<'a> DupCx<'a> {
     }
 }
 
+/// Most sets bind only plain names. With no name twice there is nothing
+/// to report, and the full check, which merges nested sets, is skipped.
+fn flat_names_distinct(ast: &Ast, binds: &[Bind]) -> bool {
+    let mut syms = [Sym(0); 32];
+    let mut n = 0;
+    for b in binds {
+        let mut add = |s: Sym| {
+            if n == syms.len() {
+                return false;
+            }
+            syms[n] = s;
+            n += 1;
+            true
+        };
+        match b.kind {
+            BindKind::Value { path, .. } => match ast.elems(path) {
+                [AttrElem::Static(s)] => {
+                    if !add(*s) {
+                        return false;
+                    }
+                }
+                _ => return false,
+            },
+            BindKind::Inherit { names, .. } => {
+                for (s, _) in ast.names(names) {
+                    if !add(*s) {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    let syms = &mut syms[..n];
+    syms.sort_unstable();
+    syms.windows(2).all(|w| w[0] != w[1])
+}
+
 fn check_dup_attrs(src: &[u8], ast: &Ast, interner: &Interner, binds: Range) -> R<()> {
     let binds = ast.binds(binds);
     let needs_check = match binds {
@@ -1578,7 +1628,7 @@ fn check_dup_attrs(src: &[u8], ast: &Ast, interner: &Interner, binds: Range) -> 
         [b] => matches!(b.kind, BindKind::Inherit { names, .. } if names.len() > 1),
         _ => true,
     };
-    if !needs_check {
+    if !needs_check || flat_names_distinct(ast, binds) {
         return Ok(());
     }
     let cx = DupCx { src, ast, interner };
