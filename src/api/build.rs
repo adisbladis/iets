@@ -64,7 +64,10 @@ pub fn transport(url: Option<&str>, cfg: &Config) -> Result<Transport> {
 }
 
 /// The upload plan for `roots`, from the derivations and sources this
-/// evaluation made.
+/// evaluation made. A root is a derivation, or a store path the evaluation
+/// added (a copied path, a `toFile` text, a tree fetched into the input
+/// store), which the plan uploads after what it references; any other root
+/// is `Error::UnknownRoot`.
 pub fn plan(ev: &Evaluator, roots: &[StorePath]) -> Result<Plan> {
     let drvs = ev.drv.drvs.lock();
     let sources = ev.known.origins();
@@ -175,7 +178,8 @@ impl Dispatch {
         self.d.submit(&mut up, batch)
     }
 
-    /// `--no-build`: register the closure and stop.
+    /// `--no-build`: register the closure and stop. A root that is a source
+    /// of the plan is valid in the store afterwards.
     pub fn upload_only(&mut self, roots: &[StorePath]) -> Result<()> {
         let locate = |paths: &[StorePath]| locate_in_store(paths, &self.overrides);
         let mut up = PlanUpload::new(&self.plan, &locate);

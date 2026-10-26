@@ -41,7 +41,8 @@ In classic mode, iets falls back to the real nix.
   reads that file.
 - **Every source the evaluation added**, dumped again from where the
   evaluation read it: a local tree with the entries a `filterSource`
-  filter accepted, a fetched input, or a `builtins.toFile` text held in
+  filter accepted, a local file `builtins.path` copied with
+  `recursive = false`, a fetched input, or a `builtins.toFile` text held in
   memory. After hashing, iets checks that the NAR still gives the planned
   store path. If the tree changed since evaluation, the build fails.
 - **Sources the evaluation did not add** (under a derivation read from the
@@ -54,8 +55,9 @@ In classic mode, iets falls back to the real nix.
 
 iets walks the closure once and reads nothing during the walk. It asks the
 daemon which paths it has, then finds and hashes only the sources the daemon
-lacks. Each path goes after every path it references. `iets plumbing plan`
-prints the result of that walk (`docs/reference/plumbing.md`).
+lacks. Each path goes after every path it references, and a text after the
+paths it names. `iets plumbing plan` prints the result of that walk
+(`docs/reference/plumbing.md`).
 
 ### The `DRV` form
 

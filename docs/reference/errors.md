@@ -58,7 +58,7 @@ dash means the code has no kind of its own.
 | `flake` | `Error::Flake` | a bad flake reference or lock file |
 | `protocol` | `Error::Protocol` | bad data from another process (daemon, worker) |
 | `cache` | `Error::Cache` | the tracing cache |
-| `plan` | `Error::Plan` | a derivation closure that cannot be built |
+| `plan` | `Error::Plan`, `Error::UnknownRoot` | a derivation closure that cannot be built, or an upload root that is neither a derivation nor a path the evaluation added |
 | `no-results` | — | `iets search`: no package matched every regex (`docs/reference/commands.md`) |
 | `no-output` | — | `iets build`: a root put no store path on stdout: nothing to build, no build result, or no such output (`docs/reference/commands.md`) |
 | `build-failed` | build status | a build that failed |
