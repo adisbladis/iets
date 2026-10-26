@@ -1439,6 +1439,57 @@ fn an_unfetchable_input() {
     );
 }
 
+/// `getFlake` of a store tree pinned with the source information of the
+/// repository it came from: `self` is what `nix eval` of the same pure
+/// expression gives, with each attribute and with none. A valid `source`
+/// path is not copied, so its `lastModified` is 0; a tree under another
+/// name is, and the store's mtime is 1.
+#[test]
+fn get_flake_of_a_pinned_store_path() {
+    let Some(mut f) = F::new() else { return };
+    let dir = f.w("pinned");
+    write(
+        Path::new(&format!("{dir}/flake.nix")),
+        "{ outputs = { self }: { }; }\n",
+    );
+    write(Path::new(&format!("{dir}/flake.lock")), LOCK);
+    let add = |name: &str| {
+        let mut c = f.s.nix("nix");
+        stdout(&ok(c.args(["store", "add", "--name", name, &dir])))
+    };
+    let (source, other) = (add("source"), add("other"));
+    let hash = f.nar_hash(&dir);
+    let rev = "0123456789ABCDEF0123456789abcdef01234567";
+    let queries = [
+        String::new(),
+        format!("&rev={rev}"),
+        "&rev=sha1-ASNFZ4mrze8BI0VniavN7wEjRWc=".into(),
+        "&revCount=42".into(),
+        "&lastModified=1585388205".into(),
+        format!("&rev={rev}&revCount=42&lastModified=1585388205"),
+    ];
+    let cases = (queries.iter().map(|q| (&source, q.as_str()))).chain([(&other, "")]);
+    for (tree, query) in cases {
+        let e = format!(
+            r#"let f = builtins.getFlake "path:{tree}?narHash={hash}{query}"; in builtins.toJSON {{
+              inherit (f) lastModified lastModifiedDate narHash;
+              path = f.outPath; info = builtins.attrNames f.sourceInfo;
+              rev = f.rev or null; shortRev = f.shortRev or null; revCount = f.revCount or null;
+            }}"#
+        );
+        let n = f.nix(&["eval", "--raw", "--expr", &e]);
+        let i = f.iets_eval(&[], &["--raw", "--no-tracing-cache", "--expr", &e]);
+        let (exp, got) = (stdout(&n), stdout(&i));
+        f.verdict(!exp.is_empty() && exp == got, || {
+            format!(
+                "{tree}?{query}\n  nix:  {exp} {}\n  iets: {got} {}",
+                last(&stderr(&n), 3),
+                last(&stderr(&i), 3)
+            )
+        });
+    }
+}
+
 /// iets reads the root tree from the working tree, so a link must resolve
 /// where the store copy puts it.
 #[test]
