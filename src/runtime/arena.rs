@@ -4,7 +4,6 @@
 //! part of the graph with no further check.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 use std::{process, ptr, slice};
 
 #[cfg(feature = "stats2")]
@@ -18,13 +17,10 @@ use crate::syntax::symbol::{FxHashMap, FxHashSet};
 use crate::sys::{self, vm};
 
 const CHUNK: usize = 32 << 20;
-/// A 32 MiB chunk populates in ~1 ms with huge pages and ~16 ms with 4 KiB
-/// pages; anything slower than this is a compaction stall.
-const THP_STALL: Duration = Duration::from_millis(6);
 
 // Call it on the thread that fills the chunk: zeroing leaves the chunk in
 // that core's L3. On a helper thread on another CCD, one worker ran 20 % slower.
-fn map_chunk(chunk: usize, thp: bool) -> (usize, bool) {
+fn map_chunk(chunk: usize) -> usize {
     // SAFETY: prefaulting only changes how the chunk's own pages are backed.
     unsafe {
         let Ok(p) = vm::map(chunk, false) else {
@@ -33,9 +29,8 @@ fn map_chunk(chunk: usize, thp: bool) -> (usize, bool) {
             errln!("error: out of memory");
             process::exit(1);
         };
-        let t0 = Instant::now();
-        sys::prefault(p.cast(), chunk, thp);
-        (p as usize, thp && sys::elapsed(t0) > THP_STALL)
+        sys::prefault(p.cast(), chunk);
+        p as usize
     }
 }
 
@@ -49,8 +44,6 @@ pub struct Arena {
     /// Boxed: `Arena` is swapped on every fiber switch, so the marks must
     /// not add their 448 bytes to that move.
     folded: Box<Folded>,
-    /// Advise huge pages until a chunk populate stalls in compaction.
-    thp: bool,
     /// String bytes by content, and the context-free string object over
     /// them once one was made (EMPTY until then). nixpkgs builds the same
     /// text millions of times (docs/explanation/evaluation.md).
@@ -103,7 +96,6 @@ impl Arena {
             mapped: 0,
             stats: Stats::default(),
             folded: Box::default(),
-            thp: true,
             strings: FxHashMap::default(),
             ctxs: FxHashSet::default(),
             heap: None,
@@ -203,17 +195,10 @@ impl Arena {
     #[cold]
     fn alloc_slow(&mut self, size: usize, align: usize) -> *mut u8 {
         let chunk = CHUNK.max((size + align + CHUNK - 1) & !(CHUNK - 1));
-        // Anonymous mmap, prefaulted in one syscall. Transparent huge pages
-        // were tried first: on a fragmented box every huge fault that misses
-        // a free 2 MiB block stalls in direct compaction and then falls back
-        // to 4 KiB pages anyway, which cost ~1 s of system time per GiB.
-        // MADV_POPULATE_WRITE zeroes the chunk inside the kernel without one
-        // trap per page. The chunk goes with the session's heap.
-        let (p, stalled) = map_chunk(chunk, self.thp);
-        if stalled {
-            self.thp = false;
-        }
-        let base = p as *mut u8;
+        // Anonymous mmap, prefaulted in one syscall: MADV_POPULATE_WRITE
+        // zeroes the chunk inside the kernel without one trap per page. The
+        // chunk goes with the session's heap.
+        let base = map_chunk(chunk) as *mut u8;
         self.heap
             .get_or_insert_with(|| Session::current().heap.clone())
             .adopt(base as usize, chunk);
