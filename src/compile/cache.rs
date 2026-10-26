@@ -37,6 +37,112 @@ use std::{fs, slice};
 
 const MAGIC: &[u8; 8] = b"IETS_IR3";
 
+/// Byte tags of an entry. The values are the format: changing one changes
+/// `MAGIC`.
+macro_rules! tags {
+    ($(#[$m:meta])* enum $name:ident { $($(#[$vm:meta])* $v:ident = $n:literal,)* }) => {
+        $(#[$m])*
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        #[repr(u8)]
+        enum $name {
+            $($(#[$vm])* $v = $n,)*
+        }
+
+        impl From<$name> for u8 {
+            fn from(t: $name) -> u8 {
+                t as u8
+            }
+        }
+
+        impl $name {
+            fn from_u8(b: u8) -> Option<Self> {
+                match b {
+                    $($n => Some(Self::$v),)*
+                    _ => None,
+                }
+            }
+        }
+    };
+}
+
+tags! {
+    enum IrTag {
+        Const = 0,
+        Local = 1,
+        WithVar = 2,
+        CurPos = 3,
+        Concat = 4,
+        SearchPath = 5,
+        Select = 6,
+        Select1 = 7,
+        HasAttr = 8,
+        Attrs = 9,
+        List = 10,
+        Lambda = 11,
+        Apply = 12,
+        Let = 13,
+        With = 14,
+        If = 15,
+        Assert = 16,
+        Not = 17,
+        Neg = 18,
+        Eq = 19,
+        Ne = 20,
+        Lt = 21,
+        Gt = 22,
+        Le = 23,
+        Ge = 24,
+        And = 25,
+        Or = 26,
+        Impl = 27,
+        Update = 28,
+        ConcatLists = 29,
+        Sub = 30,
+        Mul = 31,
+        Div = 32,
+        SelectCount = 33,
+    }
+}
+
+tags! {
+    enum ConstTag {
+        /// Small int, bool or null.
+        Imm = 0,
+        Str = 1,
+        Path = 2,
+        Float = 3,
+        Int = 4,
+        Global = 5,
+        /// A `builtins` attribute.
+        Builtin = 6,
+    }
+}
+
+tags! {
+    enum ParamTag {
+        Ident = 0,
+        Formals = 1,
+        /// An identifier the body never names: no frame.
+        IdentNoEnv = 2,
+    }
+}
+
+tags! {
+    /// `BindScope`.
+    enum ScopeTag {
+        Own = 0,
+        Outer = 1,
+        From = 2,
+    }
+}
+
+tags! {
+    enum ElemTag {
+        Static = 0,
+        Dynamic = 1,
+    }
+}
+
 pub struct IrCache {
     root: PathBuf,
     /// Sources below this size compile faster than their entry loads.
@@ -270,23 +376,21 @@ impl Ser {
         put_u32(&mut self.out, v);
     }
 
+    fn tag(&mut self, t: impl Into<u8>) {
+        self.out.push(t.into());
+    }
+
     fn opt_sym(&mut self, s: Option<Sym>) {
-        match s {
-            None => self.out.push(0),
-            Some(s) => {
-                self.out.push(1);
-                self.sym(s);
-            }
+        self.out.push(u8::from(s.is_some()));
+        if let Some(s) = s {
+            self.sym(s);
         }
     }
 
     fn opt_node(&mut self, ir: Option<IrRef>) {
-        match ir {
-            None => self.out.push(0),
-            Some(ir) => {
-                self.out.push(1);
-                self.node(ir);
-            }
+        self.out.push(u8::from(ir.is_some()));
+        if let Some(ir) = ir {
+            self.node(ir);
         }
     }
 
@@ -302,11 +406,11 @@ impl Ser {
         for e in path {
             match e {
                 AttrElemIr::Static(s) => {
-                    self.out.push(0);
+                    self.tag(ElemTag::Static);
                     self.sym(*s);
                 }
                 AttrElemIr::Dynamic(ir) => {
-                    self.out.push(1);
+                    self.tag(ElemTag::Dynamic);
                     self.node(ir);
                 }
             }
@@ -322,7 +426,7 @@ impl Ser {
                         self.ok = false;
                         return;
                     }
-                    self.out.push(1);
+                    self.tag(ConstTag::Str);
                     put_bytes(&mut self.out, s.bytes);
                     return;
                 }
@@ -331,7 +435,7 @@ impl Ser {
                         runtime::Value::Path(p) => p,
                         _ => unreachable!(),
                     };
-                    self.out.push(2);
+                    self.tag(ConstTag::Path);
                     put_bytes(&mut self.out, p.path);
                     return;
                 }
@@ -340,26 +444,30 @@ impl Ser {
                         runtime::Value::Float(f) => f,
                         _ => unreachable!(),
                     };
-                    self.out.push(3);
+                    self.tag(ConstTag::Float);
                     self.out.extend_from_slice(&f.to_bits().to_le_bytes());
                     return;
                 }
                 Some(Kind::Int) => {
                     let i = w.as_int().expect("int kind");
-                    self.out.push(4);
+                    self.tag(ConstTag::Int);
                     self.out.extend_from_slice(&i.to_le_bytes());
                     return;
                 }
                 _ => {}
             }
         } else if w.tag() == TAG_INT || w.tag() == TAG_IMM {
-            self.out.push(0);
+            self.tag(ConstTag::Imm);
             put_u64(&mut self.out, w.bits());
             return;
         }
         match self.rev.get(&w.bits()) {
             Some(&(global, sym)) => {
-                self.out.push(if global { 5 } else { 6 });
+                self.tag(if global {
+                    ConstTag::Global
+                } else {
+                    ConstTag::Builtin
+                });
                 self.sym(sym);
             }
             None => self.ok = false,
@@ -374,10 +482,10 @@ impl Ser {
         for b in binds {
             self.sym(b.sym);
             self.pos(b.pos);
-            self.out.push(match b.scope {
-                BindScope::Own => 0,
-                BindScope::Outer => 1,
-                BindScope::From => 2,
+            self.tag(match b.scope {
+                BindScope::Own => ScopeTag::Own,
+                BindScope::Outer => ScopeTag::Outer,
+                BindScope::From => ScopeTag::From,
             });
         }
         put_u32(&mut self.out, from.len() as u32);
@@ -395,16 +503,16 @@ impl Ser {
         }
         match ir {
             Ir::Const(w) => {
-                self.out.push(0);
+                self.tag(IrTag::Const);
                 self.word(*w);
             }
             Ir::Local { depth, idx } => {
-                self.out.push(1);
+                self.tag(IrTag::Local);
                 put_u32(&mut self.out, *depth);
                 put_u32(&mut self.out, *idx);
             }
             Ir::WithVar { sym, withs, pos } => {
-                self.out.push(2);
+                self.tag(IrTag::WithVar);
                 self.sym(*sym);
                 put_u32(&mut self.out, withs.len() as u32);
                 for w in withs.iter() {
@@ -413,7 +521,7 @@ impl Ser {
                 self.pos(*pos);
             }
             Ir::CurPos(pos) => {
-                self.out.push(3);
+                self.tag(IrTag::CurPos);
                 self.pos(*pos);
             }
             Ir::Concat {
@@ -421,19 +529,22 @@ impl Ser {
                 parts,
                 pos,
             } => {
-                self.out.push(4);
+                self.tag(IrTag::Concat);
                 self.out.push(*force_string as u8);
                 self.nodes(parts);
                 self.pos(*pos);
             }
             Ir::SearchPath { name, pos } => {
-                self.out.push(5);
+                self.tag(IrTag::SearchPath);
                 self.node(name);
                 self.pos(*pos);
             }
             Ir::Select(s) | Ir::SelectCount(s) => {
-                self.out
-                    .push(if matches!(ir, Ir::Select(_)) { 6 } else { 33 });
+                self.tag(if matches!(ir, Ir::Select(_)) {
+                    IrTag::Select
+                } else {
+                    IrTag::SelectCount
+                });
                 self.node(s.subject);
                 self.elems(s.path);
                 self.opt_node(s.default);
@@ -445,19 +556,19 @@ impl Ser {
                 default,
                 pos,
             } => {
-                self.out.push(7);
+                self.tag(IrTag::Select1);
                 self.node(subject);
                 self.sym(*sym);
                 self.opt_node(*default);
                 self.pos(*pos);
             }
             Ir::HasAttr { subject, path } => {
-                self.out.push(8);
+                self.tag(IrTag::HasAttr);
                 self.node(subject);
                 self.elems(path);
             }
             Ir::Attrs(a) => {
-                self.out.push(9);
+                self.tag(IrTag::Attrs);
                 self.out.push(a.rec as u8);
                 self.pos(a.pos);
                 self.binds(a.binds, a.from);
@@ -469,20 +580,23 @@ impl Ser {
                 }
             }
             Ir::List(items) => {
-                self.out.push(10);
+                self.tag(IrTag::List);
                 self.nodes(items);
             }
             Ir::Lambda(l) => {
-                self.out.push(11);
+                self.tag(IrTag::Lambda);
                 match &l.param {
-                    // 2: `no_env`, no frame
-                    ParamIr::Ident => self.out.push(if l.no_env { 2 } else { 0 }),
+                    ParamIr::Ident => self.tag(if l.no_env {
+                        ParamTag::IdentNoEnv
+                    } else {
+                        ParamTag::Ident
+                    }),
                     ParamIr::Formals {
                         has_bind,
                         formals,
                         ellipsis,
                     } => {
-                        self.out.push(1);
+                        self.tag(ParamTag::Formals);
                         self.out.push(*has_bind as u8);
                         self.out.push(*ellipsis as u8);
                         put_u32(&mut self.out, formals.len() as u32);
@@ -502,18 +616,18 @@ impl Ser {
                 self.out.push(l.closed as u8);
             }
             Ir::Apply { func, args, pos } => {
-                self.out.push(12);
+                self.tag(IrTag::Apply);
                 self.node(func);
                 self.nodes(args);
                 self.pos(*pos);
             }
             Ir::Let(l) => {
-                self.out.push(13);
+                self.tag(IrTag::Let);
                 self.binds(l.binds, l.from);
                 self.node(l.body);
             }
             Ir::With { scope, body, pos } => {
-                self.out.push(14);
+                self.tag(IrTag::With);
                 self.node(scope);
                 self.node(body);
                 self.pos(*pos);
@@ -524,45 +638,45 @@ impl Ser {
                 else_,
                 pos,
             } => {
-                self.out.push(15);
+                self.tag(IrTag::If);
                 self.node(cond);
                 self.node(then);
                 self.node(else_);
                 self.pos(*pos);
             }
             Ir::Assert { cond, body, pos } => {
-                self.out.push(16);
+                self.tag(IrTag::Assert);
                 self.node(cond);
                 self.node(body);
                 self.pos(*pos);
             }
-            Ir::Not(e, pos) => self.unary(17, e, *pos),
-            Ir::Neg(e, pos) => self.unary(18, e, *pos),
-            Ir::Eq(l, r, pos) => self.binary(19, l, r, *pos),
-            Ir::Ne(l, r, pos) => self.binary(20, l, r, *pos),
-            Ir::Lt(l, r, pos) => self.binary(21, l, r, *pos),
-            Ir::Gt(l, r, pos) => self.binary(22, l, r, *pos),
-            Ir::Le(l, r, pos) => self.binary(23, l, r, *pos),
-            Ir::Ge(l, r, pos) => self.binary(24, l, r, *pos),
-            Ir::And(l, r, pos) => self.binary(25, l, r, *pos),
-            Ir::Or(l, r, pos) => self.binary(26, l, r, *pos),
-            Ir::Impl(l, r, pos) => self.binary(27, l, r, *pos),
-            Ir::Update(l, r, pos) => self.binary(28, l, r, *pos),
-            Ir::ConcatLists(l, r, pos) => self.binary(29, l, r, *pos),
-            Ir::Sub(l, r, pos) => self.binary(30, l, r, *pos),
-            Ir::Mul(l, r, pos) => self.binary(31, l, r, *pos),
-            Ir::Div(l, r, pos) => self.binary(32, l, r, *pos),
+            Ir::Not(e, pos) => self.unary(IrTag::Not, e, *pos),
+            Ir::Neg(e, pos) => self.unary(IrTag::Neg, e, *pos),
+            Ir::Eq(l, r, pos) => self.binary(IrTag::Eq, l, r, *pos),
+            Ir::Ne(l, r, pos) => self.binary(IrTag::Ne, l, r, *pos),
+            Ir::Lt(l, r, pos) => self.binary(IrTag::Lt, l, r, *pos),
+            Ir::Gt(l, r, pos) => self.binary(IrTag::Gt, l, r, *pos),
+            Ir::Le(l, r, pos) => self.binary(IrTag::Le, l, r, *pos),
+            Ir::Ge(l, r, pos) => self.binary(IrTag::Ge, l, r, *pos),
+            Ir::And(l, r, pos) => self.binary(IrTag::And, l, r, *pos),
+            Ir::Or(l, r, pos) => self.binary(IrTag::Or, l, r, *pos),
+            Ir::Impl(l, r, pos) => self.binary(IrTag::Impl, l, r, *pos),
+            Ir::Update(l, r, pos) => self.binary(IrTag::Update, l, r, *pos),
+            Ir::ConcatLists(l, r, pos) => self.binary(IrTag::ConcatLists, l, r, *pos),
+            Ir::Sub(l, r, pos) => self.binary(IrTag::Sub, l, r, *pos),
+            Ir::Mul(l, r, pos) => self.binary(IrTag::Mul, l, r, *pos),
+            Ir::Div(l, r, pos) => self.binary(IrTag::Div, l, r, *pos),
         }
     }
 
-    fn unary(&mut self, tag: u8, e: IrRef, pos: Pos) {
-        self.out.push(tag);
+    fn unary(&mut self, tag: IrTag, e: IrRef, pos: Pos) {
+        self.tag(tag);
         self.node(e);
         self.pos(pos);
     }
 
-    fn binary(&mut self, tag: u8, l: IrRef, r: IrRef, pos: Pos) {
-        self.out.push(tag);
+    fn binary(&mut self, tag: IrTag, l: IrRef, r: IrRef, pos: Pos) {
+        self.tag(tag);
         self.node(l);
         self.node(r);
         self.pos(pos);
@@ -843,11 +957,12 @@ impl<'a> De<'a, '_> {
 
     fn elems(&mut self) -> &'static [AttrElemIr] {
         let n = self.count();
-        self.fill(n, |d| {
-            if d.u8() == 0 {
-                AttrElemIr::Static(d.sym())
-            } else {
-                AttrElemIr::Dynamic(d.node())
+        self.fill(n, |d| match ElemTag::from_u8(d.u8()) {
+            Some(ElemTag::Static) => AttrElemIr::Static(d.sym()),
+            Some(ElemTag::Dynamic) => AttrElemIr::Dynamic(d.node()),
+            None => {
+                d.ok = false;
+                AttrElemIr::Static(Sym(0))
             }
         })
     }
@@ -868,23 +983,23 @@ impl<'a> De<'a, '_> {
     }
 
     fn word(&mut self) -> Word {
-        match self.u8() {
-            0 => match Word::imm_from_bits(self.u64()) {
+        match ConstTag::from_u8(self.u8()) {
+            Some(ConstTag::Imm) => match Word::imm_from_bits(self.u64()) {
                 Some(w) => w,
                 None => {
                     self.ok = false;
                     Word::NULL
                 }
             },
-            1 => match self.stored_bytes() {
+            Some(ConstTag::Str) => match self.stored_bytes() {
                 Some(b) => self.ev.arena.mk_string(b),
                 None => Word::NULL,
             },
-            2 => match self.stored_bytes() {
+            Some(ConstTag::Path) => match self.stored_bytes() {
                 Some(b) => self.ev.arena.mk_path(b),
                 None => Word::NULL,
             },
-            3 => {
+            Some(ConstTag::Float) => {
                 let mut raw = [0u8; 8];
                 for r in raw.iter_mut() {
                     *r = self.u8();
@@ -893,14 +1008,14 @@ impl<'a> De<'a, '_> {
                     .arena
                     .mk_float(f64::from_bits(u64::from_le_bytes(raw)))
             }
-            4 => {
+            Some(ConstTag::Int) => {
                 let mut raw = [0u8; 8];
                 for r in raw.iter_mut() {
                     *r = self.u8();
                 }
                 self.ev.arena.mk_int(i64::from_le_bytes(raw))
             }
-            5 => {
+            Some(ConstTag::Global) => {
                 let s = self.sym();
                 match self.ev.globals.table.get(&s) {
                     Some(w) => *w,
@@ -910,7 +1025,7 @@ impl<'a> De<'a, '_> {
                     }
                 }
             }
-            6 => {
+            Some(ConstTag::Builtin) => {
                 let s = self.sym();
                 match self.ev.globals.builtins.and_then(|b| b.get(s)) {
                     Some(a) => a.cell.get(),
@@ -920,7 +1035,7 @@ impl<'a> De<'a, '_> {
                     }
                 }
             }
-            _ => {
+            None => {
                 self.ok = false;
                 Word::NULL
             }
@@ -1005,11 +1120,11 @@ impl<'a> De<'a, '_> {
         for _ in 0..n {
             syms.push(self.sym());
             poss.push(self.pos());
-            scopes.push(match self.u8() {
-                0 => BindScope::Own,
-                1 => BindScope::Outer,
-                2 => BindScope::From,
-                _ => {
+            scopes.push(match ScopeTag::from_u8(self.u8()) {
+                Some(ScopeTag::Own) => BindScope::Own,
+                Some(ScopeTag::Outer) => BindScope::Outer,
+                Some(ScopeTag::From) => BindScope::From,
+                None => {
                     self.ok = false;
                     BindScope::Own
                 }
@@ -1083,10 +1198,14 @@ impl<'a> De<'a, '_> {
             self.ok &= self.nest < MAX_NEST;
             return &Ir::Const(Word::NULL);
         }
+        let Some(tag) = IrTag::from_u8(self.u8()) else {
+            self.ok = false;
+            return &Ir::Const(Word::NULL);
+        };
         self.nest += 1;
-        let ir = match self.u8() {
-            0 => Ir::Const(self.word()),
-            1 => {
+        let ir = match tag {
+            IrTag::Const => Ir::Const(self.word()),
+            IrTag::Local => {
                 let depth = self.u32();
                 let idx = self.u32();
                 // the slot this names is read without a bounds check at
@@ -1107,7 +1226,7 @@ impl<'a> De<'a, '_> {
                     }
                 }
             }
-            2 => {
+            IrTag::WithVar => {
                 let sym = self.sym();
                 let n = self.count();
                 let withs = self.fill(n, |d| d.u32());
@@ -1125,8 +1244,8 @@ impl<'a> De<'a, '_> {
                 let pos = self.pos();
                 Ir::WithVar { sym, withs, pos }
             }
-            3 => Ir::CurPos(self.pos()),
-            4 => {
+            IrTag::CurPos => Ir::CurPos(self.pos()),
+            IrTag::Concat => {
                 let force_string = self.u8() != 0;
                 let parts = self.nodes();
                 let pos = self.pos();
@@ -1136,12 +1255,12 @@ impl<'a> De<'a, '_> {
                     pos,
                 }
             }
-            5 => {
+            IrTag::SearchPath => {
                 let name = self.node();
                 let pos = self.pos();
                 Ir::SearchPath { name, pos }
             }
-            t @ (6 | 33) => {
+            IrTag::Select | IrTag::SelectCount => {
                 let subject = self.node();
                 let path = self.elems();
                 let default = self.opt_node();
@@ -1152,12 +1271,13 @@ impl<'a> De<'a, '_> {
                     default,
                     pos,
                 });
-                match t {
-                    6 => Ir::Select(select),
-                    _ => Ir::SelectCount(select),
+                if tag == IrTag::Select {
+                    Ir::Select(select)
+                } else {
+                    Ir::SelectCount(select)
                 }
             }
-            7 => {
+            IrTag::Select1 => {
                 let subject = self.node();
                 let sym = self.sym();
                 let default = self.opt_node();
@@ -1169,12 +1289,12 @@ impl<'a> De<'a, '_> {
                     pos,
                 }
             }
-            8 => {
+            IrTag::HasAttr => {
                 let subject = self.node();
                 let path = self.elems();
                 Ir::HasAttr { subject, path }
             }
-            9 => {
+            IrTag::Attrs => {
                 let rec = self.u8() != 0;
                 let pos = self.pos();
                 let (binds, from, _) = self.binds(rec, false);
@@ -1203,14 +1323,17 @@ impl<'a> De<'a, '_> {
                     overrides,
                 }))
             }
-            10 => Ir::List(self.nodes()),
-            11 => {
+            IrTag::List => Ir::List(self.nodes()),
+            IrTag::Lambda => {
                 let extend = body_of.is_some_and(|n| n > 0);
-                let tag = self.u8();
-                let framed = tag != 2;
+                let ptag = ParamTag::from_u8(self.u8()).unwrap_or_else(|| {
+                    self.ok = false;
+                    ParamTag::Ident
+                });
+                let framed = ptag != ParamTag::IdentNoEnv;
                 let mut at = 0;
                 let mut end = 0;
-                let param = if tag != 1 {
+                let param = if ptag != ParamTag::Formals {
                     if framed {
                         at = self.open_frame(extend, 1, None);
                         end = at + 1;
@@ -1290,13 +1413,13 @@ impl<'a> De<'a, '_> {
                     frame: frame as u32,
                 }))
             }
-            12 => {
+            IrTag::Apply => {
                 let func = self.node();
                 let args = self.nodes();
                 let pos = self.pos();
                 Ir::Apply { func, args, pos }
             }
-            13 => {
+            IrTag::Let => {
                 let extend = body_of.is_some_and(|n| n > 0);
                 let (binds, from, at) = self.binds(true, extend);
                 let body = self.node();
@@ -1308,7 +1431,7 @@ impl<'a> De<'a, '_> {
                     base: if extend { at as u32 } else { LetIr::OWN_ENV },
                 }))
             }
-            14 => {
+            IrTag::With => {
                 let scope = self.node();
                 self.frames.push(Self::plain(1, true));
                 let body = self.node();
@@ -1316,7 +1439,7 @@ impl<'a> De<'a, '_> {
                 let pos = self.pos();
                 Ir::With { scope, body, pos }
             }
-            15 => {
+            IrTag::If => {
                 let cond = self.node();
                 let then = self.node();
                 let else_ = self.node();
@@ -1328,44 +1451,54 @@ impl<'a> De<'a, '_> {
                     pos,
                 }
             }
-            16 => {
+            IrTag::Assert => {
                 let cond = self.node();
                 let body = self.node();
                 let pos = self.pos();
                 Ir::Assert { cond, body, pos }
             }
-            17 => {
+            IrTag::Not => {
                 let e = self.node();
                 Ir::Not(e, self.pos())
             }
-            18 => {
+            IrTag::Neg => {
                 let e = self.node();
                 Ir::Neg(e, self.pos())
             }
-            t @ 19..=32 => {
+            IrTag::Eq
+            | IrTag::Ne
+            | IrTag::Lt
+            | IrTag::Gt
+            | IrTag::Le
+            | IrTag::Ge
+            | IrTag::And
+            | IrTag::Or
+            | IrTag::Impl
+            | IrTag::Update
+            | IrTag::ConcatLists
+            | IrTag::Sub
+            | IrTag::Mul
+            | IrTag::Div => {
                 let l = self.node();
                 let r = self.node();
                 let pos = self.pos();
-                match t {
-                    19 => Ir::Eq(l, r, pos),
-                    20 => Ir::Ne(l, r, pos),
-                    21 => Ir::Lt(l, r, pos),
-                    22 => Ir::Gt(l, r, pos),
-                    23 => Ir::Le(l, r, pos),
-                    24 => Ir::Ge(l, r, pos),
-                    25 => Ir::And(l, r, pos),
-                    26 => Ir::Or(l, r, pos),
-                    27 => Ir::Impl(l, r, pos),
-                    28 => Ir::Update(l, r, pos),
-                    29 => Ir::ConcatLists(l, r, pos),
-                    30 => Ir::Sub(l, r, pos),
-                    31 => Ir::Mul(l, r, pos),
-                    _ => Ir::Div(l, r, pos),
-                }
-            }
-            _ => {
-                self.ok = false;
-                Ir::Const(Word::NULL)
+                let op = match tag {
+                    IrTag::Eq => Ir::Eq,
+                    IrTag::Ne => Ir::Ne,
+                    IrTag::Lt => Ir::Lt,
+                    IrTag::Gt => Ir::Gt,
+                    IrTag::Le => Ir::Le,
+                    IrTag::Ge => Ir::Ge,
+                    IrTag::And => Ir::And,
+                    IrTag::Or => Ir::Or,
+                    IrTag::Impl => Ir::Impl,
+                    IrTag::Update => Ir::Update,
+                    IrTag::ConcatLists => Ir::ConcatLists,
+                    IrTag::Sub => Ir::Sub,
+                    IrTag::Mul => Ir::Mul,
+                    _ => Ir::Div,
+                };
+                op(l, r, pos)
             }
         };
         self.nest -= 1;
