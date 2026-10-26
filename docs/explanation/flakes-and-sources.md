@@ -257,6 +257,14 @@ The download works, but these are missing:
 The first three would make a locked `github:`, `gitlab:` or tarball root
 work. The last is what most command lines need, and it's the hard one.
 
+A program that fetches the root itself, with `nix` or its own fetcher, can
+already evaluate it. `builtins.getFlake` takes the tree in the store as a
+`path:` reference with its `narHash`, and with the `rev`, `revCount` and
+`lastModified` the fetcher reported. That is Nix's own way to make a pinned
+tree stand for its repository: the `narHash` locks the reference, so a pure
+evaluation takes it, and `self` gets the revision and the date the
+repository would give it (`docs/reference/flakes.md`).
+
 ## Input store cost
 
 A flake whose only input is `github:NixOS/nixpkgs/e554fab`, five runs with

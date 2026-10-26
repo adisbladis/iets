@@ -99,12 +99,27 @@ returns what `callFlake` returns.
 (builtins.getFlake "/home/you/project").outputs
 ```
 
-- It works **only in impure evaluation**. Every reference iets resolves is
-  unlocked, and pure evaluation refuses that
+- A pure evaluation takes it only with a `narHash`
+  (`path:/abs?narHash=sha256-…`), and only when the tree has that hash.
+  Without one the reference is unlocked, and pure evaluation refuses that
   (`docs/reference/settings.md`, "pure-eval").
 - `REF` is always a `path:` input, even inside a git repository. Nix looks
   for `.git` only when it has a base directory, and `getFlake` gives it
   none.
+- A `path:` reference can also give `rev`, `revCount` and `lastModified`.
+  Nix's `path` input takes these so that a tree copied out of a repository
+  can stand for that repository:
+
+  ```nix
+  builtins.getFlake "path:/nix/store/…-source?narHash=sha256-…&rev=b0c285…&revCount=42&lastModified=1585388205"
+  ```
+
+  `self` and `self.sourceInfo` then have `rev`, `shortRev`, `revCount`,
+  `lastModified` and `lastModifiedDate`, with the values Nix gives them.
+  `rev` is any SHA-1 form, or a hash with its type, and is shown in
+  lowercase hex. Without `lastModified`, the value is the tree's, as the
+  table under "The root tree" says. Any other parameter, `dir` too, is
+  unsupported.
 - A relative `REF` and a `#fragment` are errors, as in Nix.
 - A virtual copy (`"${./.}"` without its context) stands for its local
   tree.
@@ -267,7 +282,7 @@ source control system iets reads (`docs/explanation/flakes-and-sources.md`).
 | Source | What the tree is, and its metadata |
 |:---|:---|
 | git | the files in git's index that still exist in the working tree, with their working-tree contents and modes; untracked files, `.git` and submodules are left out. Clean: `rev`, `shortRev`, `revCount` (not in a shallow clone; deprecated, lint `rev-count`). Dirty: `dirtyRev`, `dirtyShortRev`. `submodules = false` always. `lastModified` is the time of the HEAD commit. iets counts `revCount` only when the evaluation reads it, and the tracing cache keeps the count per revision |
-| path | the whole directory; `lastModified` is the newest `lstat` mtime in it |
+| path | the whole directory; `lastModified` is the newest `lstat` mtime in it, or 0 for a store path named `source` that the store holds, which Nix does not copy |
 
 The store path is the fixed-output path of the tree's NAR hash, named
 `source`. The copy is virtual: nothing is written or fetched, and every read

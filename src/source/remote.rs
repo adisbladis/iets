@@ -180,6 +180,25 @@ impl Validity {
     }
 }
 
+/// The local daemon's isValidPath for `sp`, `None` when there is no daemon
+/// to ask.
+pub(crate) fn registered(ev: &Evaluator, sp: &StorePath) -> Option<bool> {
+    // the lock's other inputs that are on disk, in the same query
+    let locked = || {
+        ev.input_names
+            .iter()
+            .filter_map(|(h, _)| treestore::store_path("source", &parse_nar_hash(&h).ok()?).ok())
+            .map(|sp| sp.to_full_string())
+            .filter(|p| trace::stat_kind(Path::new(p), true) != trace::Kind::Missing)
+            .collect()
+    };
+    ev.store
+        .validity
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .registered(&sp.to_full_string(), locked)
+}
+
 /// store-api.cc:isValidPath for a store path whose content `method` and `hash`
 /// name. A file or directory there may be what an interrupted build or copy
 /// left, which the store never registered. The local daemon answers; without
@@ -193,24 +212,7 @@ pub fn valid_in_store(
     hash: &Hash,
 ) -> bool {
     let full = sp.to_full_string();
-    let validity = ev.store.validity.clone();
-    let names = ev.input_names.clone();
-    // the lock's other inputs that are on disk, in the same query
-    let locked = || {
-        names
-            .iter()
-            .filter_map(|(h, _)| treestore::store_path("source", &parse_nar_hash(&h).ok()?).ok())
-            .map(|sp| sp.to_full_string())
-            .filter(|p| trace::stat_kind(Path::new(p), true) != trace::Kind::Missing)
-            .collect()
-    };
-    let registered = || {
-        validity
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .registered(&full, locked)
-    };
-    match valid_kind(Path::new(&full), method, hash, registered) {
+    match valid_kind(Path::new(&full), method, hash, || registered(ev, sp)) {
         Some(kind) => {
             ev.trace().stat(full.as_bytes(), true, kind);
             true
