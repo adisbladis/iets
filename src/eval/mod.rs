@@ -39,6 +39,7 @@ use crate::runtime::{
 };
 use crate::session::Session;
 use crate::source::LazyStore;
+use crate::store::locate;
 use crate::store::path::{StorePath, store_dir, strip_store_dir};
 use crate::store::source::{SourceOrigin, SrcPath};
 use crate::syntax::ast::{Ast, FileId};
@@ -443,6 +444,20 @@ impl Default for EvalConfig {
     }
 }
 
+fn prefetch_store_entries(entries: &[(Vec<u8>, Vec<u8>)], session: &Arc<Session>) {
+    for (_, p) in entries {
+        let Some(rest) = strip_store_dir(p) else {
+            continue;
+        };
+        let base = rest.split(|&b| b == b'/').next().unwrap_or_default();
+        if let Ok(s) = str::from_utf8(base)
+            && let Ok(sp) = StorePath::from_base_name(s)
+        {
+            locate::prefetch_references(sp, session.clone());
+        }
+    }
+}
+
 impl EvalConfig {
     pub fn new() -> EvalConfig {
         EvalConfig::default()
@@ -549,6 +564,9 @@ impl EvalConfig {
     /// `system` and `pure-eval` shape the builtins, so they are fixed
     /// before `builtins::install` (docs/reference/settings.md).
     pub fn build(self) -> Evaluator {
+        if !self.pure {
+            prefetch_store_entries(&self.search_path, &self.session);
+        }
         let mut arena = Arena::in_heap(self.session.heap.clone());
         let mut interner = Interner::in_heap(self.session.heap.clone());
         for name in NIX_STATIC_SYMBOLS {
