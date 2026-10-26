@@ -202,6 +202,52 @@ fn a_flake_fragment_completes_to_the_outputs_attribute_names(bin: Iets) {
 }
 
 #[rstest]
+fn a_flake_fragment_selects_as_nix_does(bin: Iets) {
+    let d = tempdir().unwrap();
+    let host = iets::config::DEFAULT_SYSTEM;
+    // `packages` built with `//`, as a flake that adds to an imported set does
+    fs::write(
+        d.path().join("flake.nix"),
+        format!(
+            "{{ outputs = _: {{ packages.{host} = {{ hello = 1; }} // {{ extra = 2; }}; \
+             legacyPackages.{host}.legacy = 3; lib.answer = 42; }}; }}"
+        ),
+    )
+    .unwrap();
+    let eval = |frag: &str| {
+        let o = bin
+            .cmd()
+            .current_dir(d.path())
+            .args(["eval", &format!(".#{frag}")])
+            .output()
+            .expect("run iets");
+        (o.status.code(), stdout(&o).trim().to_string(), stderr(&o))
+    };
+    for (frag, want) in [
+        ("hello", "1"),
+        ("extra", "2"),
+        ("legacy", "3"),
+        ("lib.answer", "42"),
+        (".lib.answer", "42"),
+        (&format!("packages.{host}.hello"), "1"),
+    ] {
+        let (code, out, err) = eval(frag);
+        assert_eq!((code, out.as_str()), (Some(0), want), "{frag}: {err}");
+    }
+    // a leading dot names the path from the root only
+    let (code, _, err) = eval(".hello");
+    assert_eq!(code, Some(1), "{err}");
+    let (code, _, err) = eval("missing");
+    assert_eq!(code, Some(1));
+    assert!(
+        err.contains(&format!(
+            "does not provide attribute 'packages.{host}.missing', 'legacyPackages.{host}.missing' or 'missing'"
+        )),
+        "{err}"
+    );
+}
+
+#[rstest]
 fn dash_a_completes_the_attribute_names_under_its_root(bin: Iets) {
     let d = tempdir().unwrap();
     fs::write(
