@@ -1,6 +1,6 @@
 //! Positions of the bytes a string printer has to escape, 16 at a time.
 //!
-//! Builder scripts have a newline every ~20 bytes, so the iterator walks
+//! Builder scripts have a newline every ~20 bytes, so the scan walks
 //! every hit of a block from one mask instead of rescanning after each.
 
 #[cfg(target_arch = "x86_64")]
@@ -30,6 +30,7 @@ pub enum Escapes {
 }
 
 impl Escapes {
+    #[cfg(any(test, not(any(target_arch = "x86_64", target_arch = "aarch64"))))]
     fn hit(self, b: u8) -> bool {
         match self {
             Escapes::Aterm => matches!(b, b'"' | b'\\' | b'\t' | b'\n' | b'\r'),
@@ -88,52 +89,32 @@ impl Escapes {
             .fold(0, |m, (i, &b)| m | (u64::from(self.hit(b)) << i))
     }
 
-    /// Ascending positions in `s` of the bytes to escape.
-    pub fn positions(self, s: &[u8]) -> Positions<'_> {
-        Positions {
-            s,
-            set: self,
-            next: 0,
-            base: 0,
-            bits: 0,
+    /// `f` gets the positions of the bytes to escape, ascending.
+    #[inline]
+    pub fn for_each(self, s: &[u8], mut f: impl FnMut(usize)) {
+        let emit = |mut bits: u64, base: usize, f: &mut dyn FnMut(usize)| {
+            while bits != 0 {
+                f(base + (bits.trailing_zeros() / BITS) as usize);
+                bits &= bits - 1;
+            }
+        };
+        let mut next = 0;
+        while let Some(block) = s.get(next..).and_then(<[u8]>::first_chunk::<16>) {
+            emit(self.mask(block), next, &mut f);
+            next += 16;
         }
-    }
-}
-
-pub struct Positions<'a> {
-    s: &'a [u8],
-    set: Escapes,
-    /// start of the first byte not yet looked at
-    next: usize,
-    /// start of the block `bits` belongs to
-    base: usize,
-    bits: u64,
-}
-
-impl Iterator for Positions<'_> {
-    type Item = usize;
-
-    fn next(&mut self) -> Option<usize> {
-        loop {
-            if self.bits != 0 {
-                let i = self.base + (self.bits.trailing_zeros() / BITS) as usize;
-                self.bits &= self.bits - 1;
-                return Some(i);
-            }
-            let rest = self.s.get(self.next..)?;
-            if let Some(block) = rest.first_chunk::<16>() {
-                self.bits = self.set.mask(block);
-                self.base = self.next;
-                self.next += 16;
-                continue;
-            }
-            let Some(i) = rest.iter().position(|&b| self.set.hit(b)) else {
-                self.next = self.s.len();
-                return None;
-            };
-            let i = self.next + i;
-            self.next = i + 1;
-            return Some(i);
+        let rem = s.len() - next;
+        if rem == 0 {
+            return;
+        }
+        if s.len() >= 16 {
+            let block = s[s.len() - 16..].first_chunk::<16>().unwrap();
+            emit(self.mask(block) >> ((16 - rem) as u32 * BITS), next, &mut f);
+        } else {
+            // `a` is in neither set
+            let mut block = [b'a'; 16];
+            block[..rem].copy_from_slice(s);
+            emit(self.mask(&block), 0, &mut f);
         }
     }
 }
@@ -142,6 +123,12 @@ impl Iterator for Positions<'_> {
 mod tests {
     use super::Escapes;
     use rstest::rstest;
+
+    fn positions(set: Escapes, s: &[u8]) -> Vec<usize> {
+        let mut v = Vec::new();
+        set.for_each(s, |i| v.push(i));
+        v
+    }
 
     fn slow(set: Escapes, s: &[u8]) -> Vec<usize> {
         (0..s.len()).filter(|&i| set.hit(s[i])).collect()
@@ -154,7 +141,7 @@ mod tests {
             for b in 0..=255u8 {
                 s[at] = b;
                 for end in at..=s.len() {
-                    let got: Vec<usize> = set.positions(&s[..end]).collect();
+                    let got: Vec<usize> = positions(set, &s[..end]);
                     assert_eq!(got, slow(set, &s[..end]), "{b:#x} at {at}");
                 }
             }
@@ -171,7 +158,7 @@ mod tests {
                     (x >> 59) as u8 * 5 + b'\t'
                 })
                 .collect();
-            assert_eq!(set.positions(&s).collect::<Vec<_>>(), slow(set, &s));
+            assert_eq!(positions(set, &s), slow(set, &s));
         }
     }
 }

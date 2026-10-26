@@ -311,7 +311,7 @@ pub fn json_escape(out: &mut Vec<u8>, s: &[u8]) -> EvalResult<()> {
     // Every byte that needs escaping is ASCII, so copy runs between them.
     let s = st.as_bytes();
     let mut done = 0;
-    for i in Escapes::Json.positions(s) {
+    Escapes::Json.for_each(s, |i| {
         out.extend_from_slice(&s[done..i]);
         match s[i] {
             b'"' => out.extend_from_slice(b"\\\""),
@@ -324,7 +324,7 @@ pub fn json_escape(out: &mut Vec<u8>, s: &[u8]) -> EvalResult<()> {
             c => out.extend_from_slice(format!("\\u{c:04x}").as_bytes()),
         }
         done = i + 1;
-    }
+    });
     out.extend_from_slice(&s[done..]);
     out.push(b'"');
     Ok(())
