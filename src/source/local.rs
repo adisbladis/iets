@@ -46,8 +46,10 @@ pub fn path_source(ev: &mut Evaluator, dir: &Path, pos: Pos) -> EvalResult<Tree>
     })
 }
 
-/// NAR hash of a whole directory and the newest `lstat` mtime in it. A tree
-/// that is not `expect` is not made readable, and `Err` has its hash.
+/// NAR hash of a whole directory and its `lastModified` as path.cc gives it:
+/// the newest `lstat` mtime in it (`dumpPathAndGetMtime`), or 0 for a store
+/// path named `source` that the store holds, which path.cc does not copy. A
+/// tree that is not `expect` is not made readable, and `Err` has its hash.
 pub fn path_tree(
     ev: &mut Evaluator,
     dir: &Path,
@@ -66,7 +68,8 @@ pub fn path_tree(
     if expect.is_some_and(|e| *e != hash) {
         return Ok(Err(hash));
     }
-    if names_its_content(dir, &hash) {
+    let named = names_its_content(dir, &hash);
+    if named {
         ev.trace()
             .stat(dir.as_os_str().as_bytes(), false, trace::Kind::Directory);
     } else {
@@ -79,7 +82,21 @@ pub fn path_tree(
         sp,
         SourceOrigin::tree(SrcPath::fs(dir, None), hash, nar_size),
     );
-    Ok(Ok((hash, mtime)))
+    let last_modified = if held_source(ev, dir, named) {
+        0
+    } else {
+        mtime
+    };
+    Ok(Ok((hash, last_modified)))
+}
+
+/// A store path named `source` that the store holds. With no daemon to ask,
+/// one its NAR hash names is held, as `valid_in_store` holds it.
+fn held_source(ev: &Evaluator, dir: &Path, named: bool) -> bool {
+    let Some(p) = dir.to_str().and_then(|s| StorePath::parse(s).ok()) else {
+        return false;
+    };
+    p.name() == "source" && super::remote::registered(ev, &p).unwrap_or(named)
 }
 
 /// A store path that is the fixed-output path of the tree just hashed: a

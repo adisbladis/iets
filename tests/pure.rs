@@ -5,6 +5,7 @@ mod hermetic;
 
 use hermetic::{Iets, bin, stderr, stdout};
 use rstest::rstest;
+use serde_json::Value;
 
 use std::fs;
 #[cfg(unix)]
@@ -197,4 +198,110 @@ fn get_flake_takes_a_path_its_nar_hash_locks(bin: Iets) {
         e.contains("input attribute 'narHash' is not a string"),
         "{e}"
     );
+}
+
+/// A `path:` reference may carry the `rev`, `revCount` and `lastModified` of
+/// the repository its tree came from, as path.cc takes them, and `self`
+/// shows them as emitTreeAttrs does: the rev in lowercase hex, its first
+/// seven digits, the count, the time and its date. The values are what Nix
+/// 2.34.8 gives for the same references.
+#[rstest]
+fn get_flake_gives_self_the_source_information_of_a_path(bin: Iets) {
+    let d = tempdir().unwrap();
+    fs::write(d.path().join("flake.nix"), "{ outputs = _: { }; }").unwrap();
+    fs::write(
+        d.path().join("flake.lock"),
+        r#"{"nodes":{"root":{}},"root":"root","version":7}"#,
+    )
+    .unwrap();
+    let at = String::from_utf8(iets::sys::path_to_internal(d.path())).unwrap();
+    let tree = format!(r#"(builtins.fetchTree {{ type = "path"; path = "{at}"; }}).narHash"#);
+    let o = run(
+        &bin,
+        d.path(),
+        &["eval", "--impure", "--raw", "--expr", &tree],
+    );
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    let hash = stdout(&o);
+
+    let get = |query: &str, flags: &[&str]| {
+        let e = format!(
+            r#"let f = builtins.getFlake "path:{at}{query}"; in builtins.toJSON {{
+              names = builtins.attrNames f.sourceInfo;
+              rev = f.rev or null; shortRev = f.shortRev or null; revCount = f.revCount or null;
+              lastModified = if f.lastModified == f.sourceInfo.lastModified then f.lastModified else null;
+              lastModifiedDate = f.lastModifiedDate;
+            }}"#
+        );
+        let args = [&["eval", "--raw"][..], flags, &["--expr", e.as_str()][..]].concat();
+        let o = run(&bin, d.path(), &args);
+        (o.status.code(), stdout(&o), stderr(&o))
+    };
+    let json = |query: &str, flags: &[&str]| {
+        let (code, out, err) = get(query, flags);
+        assert_eq!(code, Some(0), "{query}: {err}");
+        serde_json::from_str::<serde_json::Value>(&out).unwrap()
+    };
+    let rev = "0123456789abcdef0123456789abcdef01234567";
+    let pinned = format!("?narHash={hash}");
+
+    let all = json(
+        &format!("{pinned}&rev={rev}&revCount=42&lastModified=1585388205"),
+        &[],
+    );
+    assert_eq!(
+        all,
+        serde_json::json!({
+            "names": ["lastModified", "lastModifiedDate", "narHash", "outPath", "rev", "revCount", "shortRev"],
+            "rev": rev, "shortRev": "0123456", "revCount": 42,
+            "lastModified": 1585388205, "lastModifiedDate": "20200328093645",
+        })
+    );
+
+    // each alone; a tree outside the store has its newest mtime
+    let none = json(&pinned, &[]);
+    assert_eq!(
+        none["names"],
+        serde_json::json!(["lastModified", "lastModifiedDate", "narHash", "outPath"])
+    );
+    assert_eq!(
+        (&none["rev"], &none["revCount"]),
+        (&Value::Null, &Value::Null)
+    );
+    assert!(none["lastModified"].as_u64().unwrap() > 1);
+    let one = json(&format!("{pinned}&rev={rev}"), &[]);
+    assert_eq!(
+        (&one["rev"], &one["shortRev"]),
+        (&all["rev"], &all["shortRev"])
+    );
+    assert_eq!(one["revCount"], Value::Null);
+    let one = json(&format!("{pinned}&revCount=42"), &[]);
+    assert_eq!(
+        (&one["rev"], &one["revCount"]),
+        (&Value::Null, &all["revCount"])
+    );
+    let one = json(&format!("{pinned}&lastModified=1585388205"), &[]);
+    assert_eq!(one["lastModifiedDate"], all["lastModifiedDate"]);
+    assert_eq!(one["rev"], Value::Null);
+
+    // Input::getRev reads any SHA-1 form, and a prefixed hash of another type
+    for given in [
+        "0123456789ABCDEF0123456789abcdef01234567",
+        "sha1-ASNFZ4mrze8BI0VniavN7wEjRWc=",
+    ] {
+        let one = json(&format!("{pinned}&rev={given}"), &[]);
+        assert_eq!(one["rev"], rev, "{given}");
+    }
+    let long = format!("sha256:{}", "a".repeat(64));
+    let one = json(&format!("{pinned}&rev={long}"), &[]);
+    assert_eq!(one["shortRev"], "aaaaaaa");
+    let (code, _, err) = get(&format!("{pinned}&rev=0123"), &[]);
+    assert_eq!(code, Some(1));
+    assert!(err.contains("'0123'"), "{err}");
+
+    // without a narHash it is not locked, rev or not
+    let (code, _, err) = get(&format!("?rev={rev}"), &[]);
+    assert_eq!(code, Some(1));
+    assert!(err.contains("unlocked flake reference"), "{err}");
+    assert_eq!(json(&format!("?rev={rev}"), &["--impure"])["rev"], rev);
 }
