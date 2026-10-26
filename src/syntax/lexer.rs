@@ -313,10 +313,7 @@ impl<'a> Lexer<'a> {
     fn comment(&mut self) {
         let src = self.src;
         let start = self.pos;
-        let mut i = start;
-        while i < src.len() && src[i] != b'\n' && src[i] != b'\r' {
-            i += 1;
-        }
+        let i = memchr::memchr2(b'\n', b'\r', &src[start..]).map_or(src.len(), |k| start + k);
         self.pos = i;
         if self.at(start + 2) == b'i'
             && src[start..i].starts_with(b"# iets:")
@@ -350,16 +347,10 @@ impl<'a> Lexer<'a> {
                 b' ' | b'\t' | b'\r' | b'\n' => self.pos += 1,
                 b'#' => self.comment(),
                 b'/' if self.at(self.pos + 1) == b'*' => {
-                    let mut i = self.pos + 2;
-                    loop {
-                        if i + 1 >= src.len() {
-                            return;
-                        }
-                        if src[i] == b'*' && src[i + 1] == b'/' {
-                            self.pos = i + 2;
-                            break;
-                        }
-                        i += 1;
+                    let body = self.pos + 2;
+                    match memchr::memmem::find(&src[body.min(src.len())..], b"*/") {
+                        Some(k) => self.pos = body + k + 2,
+                        None => return,
                     }
                 }
                 _ => return,
@@ -747,6 +738,9 @@ impl<'a> Lexer<'a> {
         let (start, base) = (self.pos, out.len());
         let end = self.str_chunk(out);
         // lexer.l:unescapeStr tests the raw bytes, so an escaped NUL passes
+        if memchr::memchr(0, &self.src[start..self.pos]).is_none() {
+            return end;
+        }
         let mut i = start;
         while i < self.pos {
             match self.src[i] {
@@ -813,9 +807,11 @@ impl<'a> Lexer<'a> {
                 }
                 _ => {
                     let run_start = self.pos;
-                    let mut i = self.pos + 1;
-                    while i < src.len() && !matches!(src[i], b'"' | b'\\' | b'\r' | b'$') {
-                        i += 1;
+                    let rest = &src[run_start + 1..];
+                    let mut i = memchr::memchr3(b'"', b'\\', b'$', rest)
+                        .map_or(src.len(), |k| run_start + 1 + k);
+                    if let Some(k) = memchr::memchr(b'\r', &src[run_start + 1..i]) {
+                        i = run_start + 1 + k;
                     }
                     out.extend_from_slice(&src[run_start..i]);
                     self.pos = i;
@@ -863,7 +859,12 @@ impl<'a> Lexer<'a> {
             }
             let start = self.pos;
             let mut i = start;
-            while i < src.len() {
+            loop {
+                let Some(k) = memchr::memchr2(b'\'', b'$', &src[i..]) else {
+                    i = src.len();
+                    break;
+                };
+                i += k;
                 match src[i] {
                     b'\'' => {
                         let n = self.at(i + 1);
@@ -879,7 +880,7 @@ impl<'a> Lexer<'a> {
                         }
                         i += 2;
                     }
-                    _ => i += 1,
+                    _ => unreachable!("memchr2 stops at ' or $"),
                 }
             }
             if i > start {
