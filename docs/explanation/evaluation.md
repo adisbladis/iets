@@ -212,26 +212,20 @@ objects never grow.
 
 ### Scaling limits
 
-The default is four workers. What limits it is the critical chain, not
-contention:
+The default is four workers. Past about six, the wall time stops falling.
+nixos-plasma on a 32-core EPYC 9334:
 
-| workload | workers | wall | user | sys |
-|---|---|---|---|---|
-| nixos-server | 1 | 1.67 s | 1.44 s | 0.21 s |
-| nixos-server | 4 | 1.01 s | 2.37 s | 0.31 s |
-| nixos-server | 16 | 1.27 s | 5.88 s | 0.74 s |
-| nixos-minimal | 1 | 1.32 s | 1.16 s | 0.15 s |
-| nixos-minimal | 4 | 0.89 s | 1.95 s | 0.27 s |
-| nixos-minimal | 16 | 1.18 s | 4.86 s | 0.59 s |
+| workers | wall | user | sys |
+|---|---|---|---|
+| 1 | 2.08 s | 1.76 s | 0.29 s |
+| 4 | 0.86 s | 2.29 s | 0.36 s |
+| 6 | 0.75 s | 2.51 s | 0.40 s |
+| 16 | 0.80 s | 4.22 s | 0.76 s |
+| 32 | 0.81 s | 5.53 s | 0.92 s |
 
-At eight workers the main fiber spends about 0.95 s of 1.22 s parked while
-helpers walk one chain. The chain is the module fixpoint in
-`lib/modules.nix`, which has no strict consumer to fan out from, plus
-imports: on nixos-minimal at four workers one helper spends about 0.17 s
-alone reading and compiling the 16.6 MB `hackage-packages.nix` while
-everyone else waits. Only parse and compile speed move that phase, which is
-what the IR cache does on a warm run (see
-[How caching works](caching.md)).
+From four workers on, the main fiber waits about 0.7 s for thunks other
+fibers hold: the run follows one chain of dependencies, and more workers
+only add user time.
 
 ## Determinism
 

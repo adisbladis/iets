@@ -31,7 +31,7 @@ pub fn futex_wake(_word: &AtomicU32, n: u32) {
 ///
 /// # Safety
 /// The range is an anonymous mapping of the caller's.
-pub unsafe fn prefault(_p: *mut u8, _len: usize, _huge: bool) {}
+pub unsafe fn prefault(_p: *mut u8, _len: usize) {}
 
 /// Gives the pages back and leaves fresh zero pages in their place.
 ///
