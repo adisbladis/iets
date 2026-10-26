@@ -505,6 +505,22 @@ impl AttrsObj {
         n
     }
 
+    /// A lower and an upper bound of `len`. Unlike `len`, it does not
+    /// iterate a union: a union has at least as many attributes as its
+    /// largest leaf and at most as many as all its leaves together.
+    #[inline]
+    pub(crate) fn len_bounds(&self) -> (usize, usize) {
+        let n = self.len_raw();
+        if n != u32::MAX {
+            return (n as usize, n as usize);
+        }
+        if let Some(flat) = self.flattened() {
+            return flat.len_bounds();
+        }
+        let leaves = self.leaf_sets().iter().map(|l| l.len_raw() as usize);
+        leaves.fold((0, 0), |(lo, hi), n| (lo.max(n), hi + n))
+    }
+
     /// `len` for the census, which must not count as a use.
     #[cfg(feature = "stats2")]
     pub(crate) fn len_unmarked(&self) -> usize {
