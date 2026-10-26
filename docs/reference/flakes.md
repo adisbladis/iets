@@ -266,11 +266,20 @@ It returns the attributes Nix returns:
 (`docs/reference/lints.md`, `rev-count`).
 
 A `path` input is NAR-hashed, checked against `narHash` when the lock has
-one, and is a virtual copy, like the root. A relative `path:` input
-(`path:./sub`) never reaches `fetchTree`. `nix flake lock` writes it as
-`{ path = "./sub"; type = "path"; }` with no `narHash`, iets accepts that,
-and `call-flake.nix` finds it under the parent's `outPath`. An unlocked
-remote input (no `narHash`) and a URL argument are errors.
+one, and is a virtual copy, like the root. Two are not hashed, as Nix does
+not hash them, when the store holds the store path named `source` that
+their `narHash` gives:
+
+- a `path` that is that store path, read where it is, with
+  `lastModified` 0;
+- a lock file's `path` input, which is final: it is read from the store
+  path, even once its directory is gone, and keeps the lock's attributes.
+
+A relative `path:` input (`path:./sub`) never reaches `fetchTree`. `nix
+flake lock` writes it as `{ path = "./sub"; type = "path"; }` with no
+`narHash`, iets accepts that, and `call-flake.nix` finds it under the
+parent's `outPath`. An unlocked remote input (no `narHash`) and a URL
+argument are errors.
 
 ## The root tree
 
