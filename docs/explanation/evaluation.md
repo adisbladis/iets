@@ -156,6 +156,45 @@ A census of the outpaths run after those changes priced several more ideas
 and built none of them. They are in
 [What was tried and removed](history.md).
 
+### Values kept across calls
+
+A library host evaluates a root once, such as an applied nixpkgs, and reads
+under it in many later calls (`api::value::Kept`). Three facts make that
+sound:
+
+- **Nothing moves, and nothing is freed while the session lives.** A `Word`
+  is an immediate or a tagged pointer into the session's arenas, which only
+  bump. The two calls that give bytes back, `Arena::release` and
+  `shrink_last`, give back the tail of an allocation no value points at. So
+  a word is valid for the session's life, whichever borrow made it, and the
+  `'e` of a `Value<'e>` says only that the evaluator, and so its session, is
+  alive.
+- **A word does not say which evaluator made it.** An attribute name is an
+  id in the evaluator's symbol table, and a lambda's code reads that
+  evaluator's globals. A `Kept` is the word and a weak handle to the symbol
+  table, which an evaluator shares with its fibers and nothing else.
+  `Eval::get` compares the handle with the evaluator's and answers `None` on
+  a mismatch. The weak handle keeps the table's allocation, not the table,
+  so no other evaluator's table takes its address while the `Kept` lives.
+- **A `Kept` holds none of the session.** The evaluator does, and a `Kept`
+  is read only through it. While a kept value can be read, its memory is
+  mapped. Once the evaluator goes, the value is never read again, and the
+  session is released, revoked or unmapped, as if nothing were kept.
+
+Thunks are shared, not copied. Forcing writes the value into the thunk in
+place, so a thunk forced under one borrow is a value under the next. A force
+that fails puts the thunk back ([Failed thunks](#failed-thunks)), so an
+error leaves nothing for a later borrow: the next force evaluates the thunk
+again, and a `Budget` refusal the host has lifted since then succeeds. A
+force that unwinds instead, a panic, leaves the thunks it was forcing
+claimed, and a later force of one reports infinite recursion. Drop the
+evaluator after a panic.
+
+A `Kept` is two words. Keeping one is an atomic increment, dropping it a
+decrement, and `get` one compare. It allocates nothing in the arena and keeps
+nothing alive that would otherwise be freed. It is `Send` and `Sync`: only an
+evaluator reads it, and an evaluator stays on its thread.
+
 ## The fiber scheduler
 
 You don't ask for parallel evaluation. It happens on its own: worker threads

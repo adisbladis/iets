@@ -146,6 +146,29 @@ A getter on an unforced value returns `None`, so force first. Attribute
 order, allocation and the `nix_api_value.h` mapping are in
 [Using iets as a library](../reference/library.md#the-value-api).
 
+### Keep a value for later calls
+
+A `Value<'e>` ends with its borrow. To evaluate a root once and read under
+it in later calls, keep it, and get it back under a new borrow of the same
+evaluator:
+
+```rust
+let root = {
+    let mut e = Eval::new(&mut evaluator);
+    let pkgs = e.eval_expr("import ./nixpkgs { system = \"x86_64-linux\"; }", b"/src")?;
+    let pkgs = e.force(pkgs)?;
+    e.keep(pkgs)
+};
+
+// later, in another call: the root is not evaluated again
+let mut e = Eval::new(&mut evaluator);
+let pkgs = e.get(&root).expect("kept by this evaluator");
+let hello = e.attr(pkgs, b"hello")?;
+```
+
+`get` answers `None` through any other evaluator. Keep the evaluator, its
+session and what you kept together, and drop them together.
+
 ## Build derivations
 
 `examples/build.rs` evaluates to derivations, plans the upload and builds
