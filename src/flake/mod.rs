@@ -20,7 +20,7 @@ use crate::eval::{Error as EvalError, ErrorKind, EvalResult, Evaluator, Pos};
 use crate::ignored;
 use crate::runtime::{AttrsObj, Value, Word};
 use crate::source::lock::Declared;
-use crate::source::{self, AttrVal, SourceRef, lock};
+use crate::source::{self, AttrVal, Attrs, SourceRef, lock};
 use crate::store::path::StorePath;
 use crate::sys;
 
@@ -265,12 +265,13 @@ fn read_traced(ev: &Evaluator, p: &Path) -> io::Result<Vec<u8>> {
 /// `outputs`, `sourceInfo` and its fields), as `nix-eval-jobs --flake DIR`
 /// walks it.
 pub fn eval_flake_value(ev: &mut Evaluator, fr: &FlakeRef) -> EvalResult<Word> {
-    load_flake(ev, fr, true)
+    load_flake(ev, fr, true, &Attrs::new())
 }
 
 /// `top`: the flake a command names, whose `nixConfig` Nix would apply;
-/// `builtins.getFlake` loads one that is not.
-fn load_flake(ev: &mut Evaluator, fr: &FlakeRef, top: bool) -> EvalResult<Word> {
+/// `builtins.getFlake` loads one that is not. `info` is the source
+/// information the reference carries, which replaces the tree's own.
+fn load_flake(ev: &mut Evaluator, fr: &FlakeRef, top: bool, info: &Attrs) -> EvalResult<Word> {
     let pos = Pos::NONE;
     let lock_path = fr.lock.clone().unwrap_or_else(|| fr.dir.join("flake.lock"));
     let lock_bytes = match read_traced(ev, &lock_path) {
@@ -306,7 +307,8 @@ fn load_flake(ev: &mut Evaluator, fr: &FlakeRef, top: bool) -> EvalResult<Word> 
         };
         source::scm::record_detect(ev.trace(), &fr.dir, found);
     }
-    let root = source::tree(ev, &fr.source, pos)?;
+    let mut root = source::tree(ev, &fr.source, pos)?;
+    root.attrs.extend(info.clone());
     let source_info = fetch::emit_tree_attrs(ev, &root, Some("self"), pos)?;
     let subdir = root.subdir;
     let out_path = {
@@ -381,8 +383,12 @@ pub fn get_flake(ev: &mut Evaluator, args: &[Word], pos: Pos) -> EvalResult<Word
         let msg = format!("builtins.getFlake on '{s}' {why} is not supported");
         EvalError::boxed(ErrorKind::Unsupported, msg, pos)
     };
-    let pinned = pinned_path(&p);
-    if let Some((path, expected)) = pinned {
+    let path = path_ref(&p);
+    let info = match path {
+        Some(_) => source_info(&p.input).map_err(|e| eval_error(e, pos))?,
+        None => Attrs::new(),
+    };
+    if let Some((path, expected)) = path.zip(source::str_attr(&p.input, "narHash")) {
         let expected = source::parse_nar_hash(expected).map_err(|e| eval_error(e, pos))?;
         let (got, _) = fetch::path_nar_hash(ev, path, pos)?;
         if got != expected {
@@ -394,8 +400,8 @@ pub fn get_flake(ev: &mut Evaluator, args: &[Word], pos: Pos) -> EvalResult<Word
             return Err(EvalError::boxed(ErrorKind::Eval, msg, pos));
         }
     } else if ev.pure() {
-        // a rev may lock it; the real nix decides that
-        if p.input.contains_key("rev") || p.input.contains_key("narHash") {
+        // a rev may lock another type of input; the real nix decides that
+        if path.is_none() && (p.input.contains_key("rev") || p.input.contains_key("narHash")) {
             return Err(unsupported("in pure evaluation mode"));
         }
         // flake-primops.cc prints the primop's position, which it never has
@@ -407,8 +413,7 @@ pub fn get_flake(ev: &mut Evaluator, args: &[Word], pos: Pos) -> EvalResult<Word
             pos,
         ));
     }
-    let local = (p.input.len() == 2 || pinned.is_some()) && p.dir.is_empty();
-    let Some(path) = source::str_attr(&p.input, "path").filter(|_| local) else {
+    let Some(path) = path else {
         return Err(unsupported("(only a local path)"));
     };
     let full = match locate(ev, path.as_bytes()) {
@@ -419,15 +424,34 @@ pub fn get_flake(ev: &mut Evaluator, args: &[Word], pos: Pos) -> EvalResult<Word
         _ => path.as_bytes().to_vec(),
     };
     let fr = local_flake(&full, true, Vec::new()).map_err(|e| eval_error(e, pos))?;
-    load_flake(ev, &fr, false)
+    load_flake(ev, &fr, false, &info)
 }
 
-/// `path:DIR?narHash=H` and nothing else: a reference its NAR hash locks, so
-/// a pure evaluation may take it once the tree matches.
-fn pinned_path(p: &flakeref::Parsed) -> Option<(&str, &str)> {
-    let only = p.input.len() == 3 && p.dir.is_empty();
-    let path = source::str_attr(&p.input, "path").filter(|_| only)?;
-    Some((path, source::str_attr(&p.input, "narHash")?))
+/// The path of a `path:` reference with no `dir` and no attribute that
+/// path.cc does not take: `narHash`, which locks it, and the `rev`,
+/// `revCount` and `lastModified` that make a pinned tree stand for the
+/// repository it came from.
+fn path_ref(p: &flakeref::Parsed) -> Option<&str> {
+    const TAKEN: [&str; 6] = ["type", "path", "narHash", "rev", "revCount", "lastModified"];
+    let only = p.dir.is_empty()
+        && source::str_attr(&p.input, "type") == Some("path")
+        && p.input.keys().all(|k| TAKEN.contains(&k.as_str()));
+    source::str_attr(&p.input, "path").filter(|_| only)
+}
+
+/// What a `path:` reference says about its tree, which path.cc keeps for
+/// emitTreeAttrs: `revCount`, `lastModified`, and `rev` as Input::getRev
+/// reads it, in hex.
+fn source_info(input: &Attrs) -> Result<Attrs> {
+    let mut info: Attrs = input
+        .iter()
+        .filter(|(k, _)| *k == "revCount" || *k == "lastModified")
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    if let Some(rev) = flakeref::rev(input)? {
+        info.insert("rev".into(), AttrVal::Str(rev));
+    }
+    Ok(info)
 }
 
 /// An error outside the evaluator as an evaluation error at `pos`.
