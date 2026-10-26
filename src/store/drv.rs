@@ -11,7 +11,7 @@ use super::hash::{
 use super::json::normalise_structured_attrs;
 use super::path::{
     DRV_EXTENSION, IngestionMethod, StorePath, StorePathError, make_fixed_output_path,
-    make_output_path, make_text_path, output_path_name, store_dir,
+    make_output_path, make_text_path_sorted, output_path_name, store_dir,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -618,13 +618,22 @@ impl Derivation {
 
     /// `drv_path` for a caller that already holds `self.unparse()`, so the ATerm is built once.
     pub fn drv_path_for(&self, aterm: &[u8]) -> Result<StorePath, DrvError> {
-        let mut references = self.input_srcs.clone();
-        references.extend(self.input_drvs.keys().cloned());
+        let mut references: Vec<&StorePath> = self
+            .input_srcs
+            .iter()
+            .chain(self.input_drvs.keys())
+            .collect();
+        references.sort_unstable();
+        references.dedup();
         let hash = hash_bytes(HashAlgo::Sha256, aterm);
         let mut name = String::with_capacity(self.name.len() + DRV_EXTENSION.len());
         name.push_str(&self.name);
         name.push_str(DRV_EXTENSION);
-        Ok(make_text_path(&name, &hash, &references)?)
+        Ok(make_text_path_sorted(
+            &name,
+            &hash,
+            references.iter().copied(),
+        )?)
     }
 
     /// Looks up `key` in the sorted env.

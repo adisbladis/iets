@@ -335,9 +335,12 @@ impl IngestionMethod {
 }
 
 /// Mirrors store-dir-config.cc:makeType: references are appended to the type string.
-fn make_type(mut ty: String, references: &BTreeSet<StorePath>, self_ref: bool) -> String {
-    let n: usize = references
-        .iter()
+fn make_type<'a>(
+    mut ty: String,
+    references: impl IntoIterator<Item = &'a StorePath> + Clone,
+    self_ref: bool,
+) -> String {
+    let n: usize = (references.clone().into_iter())
         .map(|r| r.base_name().len() + store_dir().len() + 2)
         .sum();
     ty.reserve(n + 5);
@@ -391,6 +394,15 @@ pub fn make_text_path(
     name: &str,
     hash: &Hash,
     references: &BTreeSet<StorePath>,
+) -> Result<StorePath, StorePathError> {
+    make_text_path_sorted(name, hash, references)
+}
+
+/// `references` sorted and deduplicated.
+pub fn make_text_path_sorted<'a>(
+    name: &str,
+    hash: &Hash,
+    references: impl IntoIterator<Item = &'a StorePath> + Clone,
 ) -> Result<StorePath, StorePathError> {
     assert_eq!(hash.algo, HashAlgo::Sha256);
     make_store_path(&make_type("text".into(), references, false), hash, name)
