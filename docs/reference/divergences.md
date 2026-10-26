@@ -354,9 +354,10 @@ whatever the features are. Its own commands have every feature, so
 
 The same holds for a derivation: `outputHashMode = "text"` needs
 `dynamic-derivations` in Nix, and `outputHashAlgo = "blake3"` needs
-`blake3-hashes`; iets gives the drvPath of each. The drv-eval fuzz target
-meets both (`drv-eval-text-mode-without-feature`,
-`drv-eval-blake3-without-feature`). Its oracle has `ca-derivations` on,
+`blake3-hashes`. iets gives the drvPath of each. Only with
+`dynamic-derivations` does Nix check `requiredSystemFeatures`. iets always
+does. The drv-eval fuzz target meets all three
+(`drv-eval-*-without-feature`). Its oracle has `ca-derivations` on,
 so `__contentAddressed` is compared.
 
 `builtins.outputOf` works. The one thing a run cannot do is read back a
