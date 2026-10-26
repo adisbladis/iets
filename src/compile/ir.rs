@@ -154,6 +154,16 @@ pub struct LambdaIr {
     /// The body reads no variable of an enclosing scope (no `Local` above
     /// its own frame, no `with` variable), so every closure of it is alike.
     pub closed: bool,
+    /// `x: e` where `e` never names `x`: the body has no frame for `x` and
+    /// runs in the closure's env.
+    pub no_env: bool,
+    /// Slots of the enclosing lambda's frame this one extends: nonzero for
+    /// the body of a lambda (`a: b: e`), whose params then follow the
+    /// parent's in one env.
+    pub base: u32,
+    /// Slots of the env a call evaluates the body in: `base`, the params,
+    /// and a `let` body's bindings (`LetIr::base`).
+    pub frame: u32,
 }
 
 pub enum ParamIr {
@@ -196,6 +206,13 @@ pub struct LetIr {
     pub binds: &'static [BindIr],
     pub from: &'static [IrRef],
     pub body: IrRef,
+    /// `OWN_ENV`, or the first slot of the bindings in the env of the
+    /// lambda this `let` is the body of.
+    pub base: u32,
+}
+
+impl LetIr {
+    pub const OWN_ENV: u32 = u32::MAX;
 }
 
 // Every evaluated file keeps its IR for the whole run: 101 MB on nixos-server

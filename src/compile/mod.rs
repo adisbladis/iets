@@ -9,7 +9,7 @@ use crate::eval::{Error, ErrorKind, Pos};
 use crate::lint::{self, Level, LintId};
 use crate::runtime::{Arena, AttrsObj, Word};
 use crate::syntax::ast::{
-    Ast, AttrElem, BinOp, Bind, BindKind, Expr, ExprId, Note, Param, PathKind, StrPart, UnOp,
+    Ast, AttrElem, BinOp, Bind, BindKind, Expr, ExprId, Note, Param, PathKind, Range, StrPart, UnOp,
 };
 use crate::syntax::symbol::{FxHashMap, Interner, Sym};
 use crate::sys;
@@ -30,8 +30,23 @@ pub struct Globals {
 }
 
 enum Scope {
-    Lexical(FxHashMap<Sym, u32>),
+    /// Names and their slots; `shares` when the slots extend the frame of
+    /// the scope below instead of opening one (a lambda's body lambda or
+    /// `let`).
+    Lexical {
+        names: FxHashMap<Sym, u32>,
+        shares: bool,
+    },
     With,
+}
+
+impl Scope {
+    fn frame(names: FxHashMap<Sym, u32>) -> Scope {
+        Scope::Lexical {
+            names,
+            shares: false,
+        }
+    }
 }
 
 pub struct Compiler<'a> {
@@ -43,6 +58,9 @@ pub struct Compiler<'a> {
     /// Open lambdas, innermost last: the index in `scopes` of the param
     /// frame and whether the body has read a variable from outside it.
     lambdas: Vec<(usize, Cell<bool>)>,
+    /// Sorted start offsets of each symbol's `Var`s and `inherit` names,
+    /// built on the file's first `x: e`.
+    var_uses: Option<FxHashMap<Sym, Vec<u32>>>,
     /// Directory of the file being compiled, for relative paths.
     base_dir: Vec<u8>,
     /// Global offset of this file's first byte.
@@ -65,6 +83,27 @@ type CResult<T> = Result<T, Box<Error>>;
 
 fn err<T>(kind: ErrorKind, msg: String, pos: Pos) -> CResult<T> {
     Err(Box::new(Error::new(kind, msg, pos)))
+}
+
+/// Every variable reference is a `Var` or an `inherit` name.
+fn var_uses(ast: &Ast) -> FxHashMap<Sym, Vec<u32>> {
+    let vars = ast
+        .exprs
+        .iter()
+        .zip(&ast.spans)
+        .filter_map(|(e, s)| match e {
+            Expr::Var(v) => Some((*v, s)),
+            _ => None,
+        });
+    let inherits = ast.names.iter().map(|(v, s)| (*v, s));
+    let mut m: FxHashMap<Sym, Vec<u32>> = FxHashMap::default();
+    for (v, s) in vars.chain(inherits) {
+        m.entry(v).or_default().push(s.start);
+    }
+    for v in m.values_mut() {
+        v.sort_unstable();
+    }
+    m
 }
 
 /// Intermediate attrpath-merged binding tree, mirroring Nix's `addAttr`.
@@ -136,6 +175,7 @@ impl<'a> Compiler<'a> {
             globals,
             scopes: Vec::new(),
             lambdas: Vec::new(),
+            var_uses: None,
             base_dir: base_dir.to_vec(),
             base,
             home: env::var_os("HOME").map(|h| h.into_encoded_bytes()),
@@ -158,7 +198,7 @@ impl<'a> Compiler<'a> {
             for (i, s) in names.iter().enumerate() {
                 m.insert(*s, i as u32);
             }
-            self.scopes.push(Scope::Lexical(m));
+            self.scopes.push(Scope::frame(m));
         }
         self.parser_notes()?;
         let root = self.ast.root;
@@ -267,23 +307,29 @@ impl<'a> Compiler<'a> {
 
     fn resolve(&mut self, sym: Sym) -> Option<Ir> {
         let mut withs: Vec<u32> = Vec::new();
+        let mut outermost_with = None;
+        let mut depth = 0;
         let n = self.scopes.len();
         for (d, scope) in self.scopes.iter().rev().enumerate() {
             match scope {
-                Scope::Lexical(m) => {
-                    if let Some(&idx) = m.get(&sym) {
+                Scope::Lexical { names, shares } => {
+                    if let Some(&idx) = names.get(&sym) {
                         self.note_capture(n - 1 - d);
-                        return Some(Ir::Local {
-                            depth: d as u32,
-                            idx,
-                        });
+                        return Some(Ir::Local { depth, idx });
+                    }
+                    if !shares {
+                        depth += 1;
                     }
                 }
-                Scope::With => withs.push(d as u32),
+                Scope::With => {
+                    withs.push(depth);
+                    outermost_with = Some(n - 1 - d);
+                    depth += 1;
+                }
             }
         }
-        if let Some(outermost) = withs.last() {
-            self.note_capture(n - 1 - *outermost as usize);
+        if let Some(s) = outermost_with {
+            self.note_capture(s);
         }
         // Globals live in Nix's static base env, a lexical scope, so they
         // beat any enclosing `with` (`with { true = 1; }; true` is `true`).
@@ -382,7 +428,9 @@ impl<'a> Compiler<'a> {
                 }
                 Ir::List(self.alloc_refs(v))
             }
-            Expr::Lambda { param, body } => Ir::Lambda(self.lambda(*param, *body, pos, None)?),
+            Expr::Lambda { param, body } => {
+                Ir::Lambda(self.lambda(*param, *body, pos, None, None)?)
+            }
             Expr::Apply { func, args } => {
                 let func = self.expr(*func)?;
                 let args = ast.ids(*args);
@@ -396,20 +444,7 @@ impl<'a> Compiler<'a> {
                     pos,
                 }
             }
-            Expr::Let { binds, body } => {
-                let merged = self.merge_binds(true, ast.binds(*binds), pos)?;
-                if !merged.dynamics.is_empty() {
-                    return err(
-                        ErrorKind::Eval,
-                        "dynamic attributes not allowed in let".into(),
-                        pos,
-                    );
-                }
-                let (binds, from) = self.lower_rec_binds(merged)?;
-                let body = self.expr(*body)?;
-                self.scopes.pop();
-                Ir::Let(self.alloc(LetIr { binds, from, body }))
-            }
+            Expr::Let { binds, body } => self.let_in(*binds, *body, pos, None)?,
             Expr::With { scope, body } => {
                 let scope = self.expr(*scope)?;
                 self.scopes.push(Scope::With);
@@ -468,8 +503,8 @@ impl<'a> Compiler<'a> {
 
     fn lexical_lookup(&self, sym: Sym) -> Option<(u32, u32)> {
         for (d, scope) in self.scopes.iter().rev().enumerate() {
-            if let Scope::Lexical(m) = scope
-                && let Some(&idx) = m.get(&sym)
+            if let Scope::Lexical { names, .. } = scope
+                && let Some(&idx) = names.get(&sym)
             {
                 return Some((d as u32, idx));
             }
@@ -910,7 +945,7 @@ impl<'a> Compiler<'a> {
             let pos = m.pos;
             let mut m = m;
             let dynamics = mem::take(&mut m.dynamics);
-            let (binds, from) = self.lower_rec_binds(m)?;
+            let (binds, from) = self.lower_rec_binds(m, None)?;
             // dynamics of rec sets are evaluated in the rec env: compile them
             // while its scope is still pushed
             let dynamic = self.lower_dynamics(dynamics)?;
@@ -984,7 +1019,7 @@ impl<'a> Compiler<'a> {
             from.push(self.expr(*e)?);
         }
         if !deferred_from.is_empty() {
-            self.scopes.push(Scope::Lexical(FxHashMap::default()));
+            self.scopes.push(Scope::frame(FxHashMap::default()));
             // the from-env has `from.len()` anonymous slots at depth 0
             for (fi, name, bpos, bi) in deferred_from {
                 let subject = self.alloc(Ir::Local {
@@ -1036,7 +1071,34 @@ impl<'a> Compiler<'a> {
     /// Recursive bindings (`rec { }` and `let`). Pushes the new scope and
     /// leaves it on the stack so the caller can compile the body; the caller
     /// pops it.
-    fn lower_rec_binds(&mut self, m: Merged) -> CResult<(&'static [BindIr], &'static [IrRef])> {
+    /// `let`; with `base`, its slots extend the frame of the lambda it is the
+    /// body of from slot `base` on.
+    fn let_in(&mut self, binds: Range, body: ExprId, pos: Pos, base: Option<u32>) -> CResult<Ir> {
+        let ast: &'a Ast = self.ast;
+        let merged = self.merge_binds(true, ast.binds(binds), pos)?;
+        if !merged.dynamics.is_empty() {
+            return err(
+                ErrorKind::Eval,
+                "dynamic attributes not allowed in let".into(),
+                pos,
+            );
+        }
+        let (binds, from) = self.lower_rec_binds(merged, base)?;
+        let body = self.expr(body)?;
+        self.scopes.pop();
+        Ok(Ir::Let(self.alloc(LetIr {
+            binds,
+            from,
+            body,
+            base: base.unwrap_or(LetIr::OWN_ENV),
+        })))
+    }
+
+    fn lower_rec_binds(
+        &mut self,
+        m: Merged,
+        base: Option<u32>,
+    ) -> CResult<(&'static [BindIr], &'static [IrRef])> {
         let Merged {
             mut statics,
             from_exprs,
@@ -1052,11 +1114,15 @@ impl<'a> Compiler<'a> {
                 _ => None,
             });
         }
+        let at = base.unwrap_or(0);
         let mut names = FxHashMap::with_capacity_and_hasher(statics.len(), Default::default());
         for (i, (sym, _, _)) in statics.iter().enumerate() {
-            names.insert(*sym, i as u32);
+            names.insert(*sym, at + i as u32);
         }
-        self.scopes.push(Scope::Lexical(names));
+        self.scopes.push(Scope::Lexical {
+            names,
+            shares: base.is_some(),
+        });
         let nbinds = statics.len();
         let mut binds = Vec::with_capacity(nbinds);
         for (i, (sym, def, bpos)) in statics.into_iter().enumerate() {
@@ -1070,7 +1136,7 @@ impl<'a> Compiler<'a> {
                 Def::InheritFrom(fi, name) => {
                     let subject = self.alloc(Ir::Local {
                         depth: 0,
-                        idx: (nbinds + fi) as u32,
+                        idx: at + (nbinds + fi) as u32,
                     });
                     (self.inherit_from(subject, name, bpos), BindScope::Own)
                 }
@@ -1114,10 +1180,26 @@ impl<'a> Compiler<'a> {
         let ast: &'a Ast = self.ast;
         if let Expr::Lambda { param, body } = ast.expr(e) {
             let pos = self.pos(e);
-            let l = self.lambda(*param, *body, pos, name)?;
+            let l = self.lambda(*param, *body, pos, name, None)?;
             return Ok(self.alloc(Ir::Lambda(l)));
         }
         self.expr(e)
+    }
+
+    /// Whether `body` may read the variable `sym`. Desugared syntax reads
+    /// `__`-names without naming them (`<p>` reads `__findFile`), so those
+    /// always count.
+    fn named_in(&mut self, sym: Sym, body: ExprId) -> bool {
+        if self.interner.name(sym).starts_with(b"__") {
+            return true;
+        }
+        let ast: &'a Ast = self.ast;
+        let span = ast.span(body);
+        let uses = self.var_uses.get_or_insert_with(|| var_uses(ast));
+        uses.get(&sym).is_some_and(|v| {
+            let i = v.partition_point(|&p| p < span.start);
+            v.get(i).is_some_and(|&p| p < span.end)
+        })
     }
 
     fn lambda(
@@ -1126,17 +1208,28 @@ impl<'a> Compiler<'a> {
         body: ExprId,
         pos: Pos,
         name: Option<Sym>,
+        base: Option<u32>,
     ) -> CResult<&'static LambdaIr> {
         let _ = self.sym_body;
         let ast: &'a Ast = self.ast;
+        let at = base.unwrap_or(0);
         match param {
             Param::Ident(sym) => {
-                let mut m = FxHashMap::default();
-                m.insert(sym, 0);
+                let named = self.named_in(sym, body);
                 self.lambdas.push((self.scopes.len(), Cell::new(false)));
-                self.scopes.push(Scope::Lexical(m));
-                let body = self.expr(body)?;
-                self.scopes.pop();
+                let body = if named {
+                    let mut names = FxHashMap::default();
+                    names.insert(sym, at);
+                    self.scopes.push(Scope::Lexical {
+                        names,
+                        shares: base.is_some(),
+                    });
+                    let body = self.lambda_body(body, at + 1)?;
+                    self.scopes.pop();
+                    body
+                } else {
+                    self.expr(body)?
+                };
                 let closed = !self.lambdas.pop().unwrap().1.get();
                 Ok(self.alloc(LambdaIr {
                     param: ParamIr::Ident,
@@ -1145,6 +1238,9 @@ impl<'a> Compiler<'a> {
                     name,
                     arg: Some(sym),
                     closed,
+                    no_env: !named,
+                    base: if named { at } else { 0 },
+                    frame: if named { frame_end(body, at + 1) } else { 0 },
                 }))
             }
             Param::Formals {
@@ -1168,7 +1264,7 @@ impl<'a> Compiler<'a> {
                     }
                 }
                 let mut m = FxHashMap::default();
-                let mut idx = 0u32;
+                let mut idx = at;
                 if let Some(b) = bind {
                     m.insert(b, idx);
                     idx += 1;
@@ -1187,7 +1283,10 @@ impl<'a> Compiler<'a> {
                     idx += 1;
                 }
                 self.lambdas.push((self.scopes.len(), Cell::new(false)));
-                self.scopes.push(Scope::Lexical(m));
+                self.scopes.push(Scope::Lexical {
+                    names: m,
+                    shares: base.is_some(),
+                });
                 let mut firs = Vec::with_capacity(sorted.len());
                 for f in &sorted {
                     let default = match f.default {
@@ -1200,7 +1299,7 @@ impl<'a> Compiler<'a> {
                         pos: Pos(self.base + f.span.start),
                     });
                 }
-                let body = self.expr(body)?;
+                let body = self.lambda_body(body, idx)?;
                 self.scopes.pop();
                 let closed = !self.lambdas.pop().unwrap().1.get();
                 let formals = self.alloc_formals(firs);
@@ -1215,9 +1314,41 @@ impl<'a> Compiler<'a> {
                     name,
                     arg: bind,
                     closed,
+                    no_env: false,
+                    base: at,
+                    frame: frame_end(body, idx),
                 }))
             }
         }
+    }
+
+    /// The body of a lambda whose frame has `end` slots: a lambda or `let`
+    /// there extends that frame instead of opening its own. An empty frame
+    /// (`{ }:`) is not extended: `base` 0 marks a lambda with its own.
+    /// `cache::De` applies the same rule when it loads the IR.
+    fn lambda_body(&mut self, body: ExprId, end: u32) -> CResult<IrRef> {
+        if end == 0 {
+            return self.expr(body);
+        }
+        let ast: &'a Ast = self.ast;
+        let pos = self.pos(body);
+        let ir = match ast.expr(body) {
+            Expr::Lambda { param, body } => {
+                Ir::Lambda(self.lambda(*param, *body, pos, None, Some(end))?)
+            }
+            Expr::Let { binds, body } => self.let_in(*binds, *body, pos, Some(end))?,
+            _ => return self.expr(body),
+        };
+        Ok(self.alloc(ir))
+    }
+}
+
+/// Slots of a lambda's env: `end` after its params, or past the bindings
+/// of a `let` body that extends the frame.
+fn frame_end(body: IrRef, end: u32) -> u32 {
+    match body {
+        Ir::Let(l) if l.base != LetIr::OWN_ENV => l.base + (l.binds.len() + l.from.len()) as u32,
+        _ => end,
     }
 }
 

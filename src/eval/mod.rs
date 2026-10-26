@@ -21,7 +21,7 @@ use crate::builtins::derivation::DrvState;
 use crate::builtins::{self, store_hooks};
 use crate::compile::cache::{self, IrCache};
 use crate::compile::ir::{
-    AttrElemIr, AttrsIr, BindIr, BindScope, Ir, IrRef, LambdaIr, ParamIr, SelectIr,
+    AttrElemIr, AttrsIr, BindIr, BindScope, Ir, IrRef, LambdaIr, LetIr, ParamIr, SelectIr,
 };
 use crate::compile::{self, Compiler, Globals};
 use crate::events::{self, Field, Group};
@@ -1573,31 +1573,63 @@ impl Evaluator {
         while !args.is_empty() {
             match cur.view() {
                 Value::Lambda(l) => {
-                    // `a: b: e` applied to two arguments binds `b` in the env
-                    // of `a` directly, without the closure in between
                     let (mut fenv, mut lam) = (l.env, l.lam);
-                    while args.len() >= 2
-                        && let Ir::Lambda(inner) = lam.body
-                    {
-                        self.nr_function_calls += 1;
-                        let d = self.prof_enter(pos, lam.name);
-                        fenv = self.bind_lambda(fenv, lam, args[0], pos)?;
-                        self.prof.unwind(d);
-                        lam = inner;
-                        args = &args[1..];
-                    }
-                    self.nr_function_calls += 1;
-                    let d = self.prof_enter(pos, lam.name);
-                    let env2 = self.bind_lambda(fenv, lam, args[0], pos)?;
-                    cur = self.eval(env2, lam.body).map_err(|mut e| {
-                        e.add_trace(lam.pos, format!("while calling {}", self.lambda_desc(lam)));
-                        if !pos.is_none() {
-                            e.add_trace(pos, "from call site");
+                    loop {
+                        // `lam` and the lambdas in its body that extend its
+                        // frame (`a: b: e`) take their args in one env
+                        let mut last = lam;
+                        let mut n = 1;
+                        while n < args.len()
+                            && let Ir::Lambda(inner) = last.body
+                            && inner.base > 0
+                        {
+                            last = inner;
+                            n += 1;
                         }
-                        e
-                    })?;
-                    self.prof.unwind(d);
-                    args = &args[1..];
+                        let env2 = if lam.no_env {
+                            fenv
+                        } else {
+                            self.frame_env(fenv, lam, last.frame)
+                        };
+                        let mut cur_lam = lam;
+                        let mut d = 0;
+                        for (i, a) in args[..n].iter().enumerate() {
+                            if i > 0 {
+                                let Ir::Lambda(inner) = cur_lam.body else {
+                                    unreachable!("the walk above found a lambda");
+                                };
+                                cur_lam = inner;
+                                self.prof.unwind(d);
+                            }
+                            self.nr_function_calls += 1;
+                            d = self.prof_enter(pos, cur_lam.name);
+                            if !cur_lam.no_env {
+                                self.bind_params(env2, cur_lam, *a, pos)?;
+                            }
+                        }
+                        args = &args[n..];
+                        // `a: b: e` applied to two arguments with `b` in an
+                        // env of its own: bind `b` without the closure
+                        if !args.is_empty()
+                            && let Ir::Lambda(inner) = last.body
+                        {
+                            self.prof.unwind(d);
+                            (fenv, lam) = (env2, inner);
+                            continue;
+                        }
+                        cur = self.eval(env2, last.body).map_err(|mut e| {
+                            e.add_trace(
+                                last.pos,
+                                format!("while calling {}", self.lambda_desc(last)),
+                            );
+                            if !pos.is_none() {
+                                e.add_trace(pos, "from call site");
+                            }
+                            e
+                        })?;
+                        self.prof.unwind(d);
+                        break;
+                    }
                 }
                 Value::PrimOp(op) => {
                     let arity = op.arity as usize;
@@ -1664,16 +1696,36 @@ impl Evaluator {
         Ok(cur)
     }
 
-    /// The env of a call of `lam` closed over `fenv`, its parameters bound.
-    fn bind_lambda(
+    /// An env of `size` slots for a call of `lam` in the closure env
+    /// `fenv`. A lambda that extends its parent's frame starts from a copy
+    /// of the parent's slots, above the parent's env.
+    fn frame_env(
         &mut self,
         fenv: &'static EnvObj,
         lam: &'static LambdaIr,
+        size: u32,
+    ) -> &'static EnvObj {
+        if lam.base == 0 {
+            return self.arena.alloc_env(Some(fenv), size as usize);
+        }
+        let n = lam.base as usize;
+        let env2 = self.arena.alloc_env(fenv.up(), size as usize);
+        for (to, from) in env2.slots_n(n).iter().zip(fenv.slots_n(n)) {
+            to.set(from.get());
+        }
+        env2
+    }
+
+    /// `lam`'s params from `arg`, in `env2` from slot `lam.base` on.
+    fn bind_params(
+        &mut self,
+        env2: &'static EnvObj,
+        lam: &'static LambdaIr,
         arg: Word,
         pos: Pos,
-    ) -> EvalResult<&'static EnvObj> {
-        let env2 = self.arena.alloc_env(Some(fenv), lam.nslots());
-        let slots = env2.slots_n(lam.nslots());
+    ) -> EvalResult<()> {
+        let base = lam.base as usize;
+        let slots = &env2.slots_n(base + lam.nslots())[base..];
         match &lam.param {
             ParamIr::Ident => slots[0].set(arg),
             ParamIr::Formals {
@@ -1746,7 +1798,7 @@ impl Evaluator {
                 }
             }
         }
-        Ok(env2)
+        Ok(())
     }
 
     fn lambda_name(&self, lam: &LambdaIr) -> String {
@@ -1843,7 +1895,14 @@ impl Evaluator {
                 }
             }
             Ir::Let(l) => {
-                let env2 = self.alloc_rec_env(env, l.binds, l.from, false);
+                let env2 = if l.base == LetIr::OWN_ENV {
+                    self.alloc_rec_env(env, l.binds, l.from, false)
+                } else {
+                    // the lambda's call made the slots; `inherit x` reads
+                    // its params, which live in the same env
+                    self.fill_rec_slots(env, env, l.base as usize, l.binds, l.from, false);
+                    env
+                };
                 self.eval(env2, l.body)
             }
             Ir::With { scope, body, .. } => {
@@ -2215,7 +2274,22 @@ impl Evaluator {
         overrides: bool,
     ) -> &'static EnvObj {
         let env2 = self.arena.alloc_env(Some(env), binds.len() + from.len());
-        let slots = env2.slots_n(binds.len() + from.len());
+        self.fill_rec_slots(env, env2, 0, binds, from, overrides);
+        env2
+    }
+
+    /// The binds and `from` thunks of `env2` from slot `base` on; `inherit x`
+    /// reads `env`.
+    fn fill_rec_slots(
+        &mut self,
+        env: &'static EnvObj,
+        env2: &'static EnvObj,
+        base: usize,
+        binds: &'static [BindIr],
+        from: &'static [IrRef],
+        overrides: bool,
+    ) {
+        let slots = &env2.slots_n(base + binds.len() + from.len())[base..];
         // eval.cc:ExprAttrs::eval takes a real thunk for every binding that
         // is not inherited when `__overrides` is there, so the override
         // reaches the other bindings. The test is out of the loop: the
@@ -2241,7 +2315,6 @@ impl Evaluator {
             let w = self.maybe_thunk(env2, f);
             slots[binds.len() + j].set(w);
         }
-        env2
     }
 
     fn eval_attrs(&mut self, env: &'static EnvObj, a: &'static AttrsIr) -> EvalResult<Word> {
