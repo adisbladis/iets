@@ -5,9 +5,10 @@
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::process;
+use std::ptr;
 use std::str::from_utf8;
 use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, Weak};
 
 use crate::runtime::heap::Heap;
 use crate::session::Session;
@@ -132,6 +133,12 @@ impl Default for Interner {
         Self::new()
     }
 }
+
+/// Which table an interner shares, for a value kept past its borrow
+/// (`api::value::Kept`). Weak: it keeps none of the table, and the address
+/// it compares is not reused while it lives.
+#[derive(Clone)]
+pub(crate) struct TableId(Weak<Inner>);
 
 /// The mapping of [`per_sym`].
 pub(super) fn unmap_per_sym<T>(p: *mut T) {
@@ -263,6 +270,15 @@ impl Interner {
 
     pub fn len(&self) -> usize {
         self.shared.next.load(Ordering::Relaxed) as usize
+    }
+
+    pub(crate) fn id(&self) -> TableId {
+        TableId(Arc::downgrade(&self.shared))
+    }
+
+    /// Whether this interner shares the table `id` names.
+    pub(crate) fn has_id(&self, id: &TableId) -> bool {
+        ptr::eq(Arc::as_ptr(&self.shared), id.0.as_ptr())
     }
 
     pub fn is_empty(&self) -> bool {

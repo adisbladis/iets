@@ -103,6 +103,17 @@ carries one, are plain data: keep them only while the session lives. If you
 use one later, the process stops with
 `error: a value was used after its session was released`.
 
+To read a value again in a later call, keep it: `Eval::keep(v)` gives a
+`value::Kept`, and `Eval::get(&kept)` gives the value back under any later
+borrow of the same evaluator. A host evaluates a root once, such as
+`import <nixpkgs> { }`, and reads under it for as long as the evaluator
+lives, never paying for the root again. A `Kept` holds none of the session:
+`get` answers `None` through any other evaluator, so once its evaluator is
+gone it is never read again, and the session is released as if it were not
+there. It is two words, `Send` and `Sync`; only the evaluator's own thread
+reads it. How it stays valid is in
+[Values kept across calls](../explanation/evaluation.md#values-kept-across-calls).
+
 By default, released memory stays reserved and inaccessible, so its
 addresses are never reused and a stale value never reads another session's
 data. That costs address space and kernel mappings, not memory: a host that
@@ -114,7 +125,8 @@ before it, Rust's or your own.
 A host that keeps no `Word` past its session can give the memory back
 instead, with `session.heap.set_release(Release::Unmap)` before the session
 goes. A stale value then reads whatever is mapped at its address later, and
-nothing stops the process.
+nothing stops the process. A `Kept` is safe either way, since it is read only
+while its evaluator, and so its session, lives.
 
 An `Evaluator` is not `Send`: it stays on the thread that built it.
 
@@ -186,6 +198,7 @@ Methods on `Eval` may evaluate, intern a name or allocate.
 | Attribute by name | `Eval::attr(v, name)` (unforced), `Eval::has_attr(v, name)` |
 | Attribute by index | `Eval::attr_at(v, i) -> Option<(name, value)>` |
 | Call a function | `Eval::call(f, arg)`; `Eval::apply(f, arg)` for a thunk |
+| Keep a value for a later borrow | `Eval::keep(v) -> Kept`, then `Eval::get(&kept) -> Option<Value>` |
 | Construct | `Eval::int`, `float`, `boolean`, `null`, `string`, `path`, `list`, `attrs` |
 | Errors | `eval::EvalResult<T>`, reported with `api::report` |
 
@@ -201,6 +214,11 @@ Methods on `Eval` may evaluate, intern a name or allocate.
   once.
 - Keep one `Eval` per evaluator. A value passed to a different `Eval` reads
   names through the wrong symbol table, and the lifetime can't stop you.
+  `get` checks this for a `Kept`; `keep` cannot, so keep a value through
+  the `Eval` it came from.
+- A kept thunk comes back a thunk. Force it: a thunk forced under an earlier
+  borrow is not evaluated again, and one that failed is evaluated again, as
+  in Nix.
 - External values (`NIX_TYPE_EXTERNAL`) do not exist in iets, so
   `ValueKind` has no `External`.
 
@@ -225,7 +243,7 @@ has a shape to copy:
 | `nix_make_list_builder` + `nix_make_list` | `Eval::list(&[Value])` |
 | `nix_make_bindings_builder` + `nix_make_attrs` | `Eval::attrs(&[(name, Value)])` |
 | `EvalState *`, `nix_value *` | `Eval<'e>`, `Value<'e>` |
-| `nix_value_incref`/`decref`, `nix_gc_*` | nothing: the arena is never freed |
+| `nix_value_incref`/`decref`, `nix_gc_*` | `Eval::keep` to hold a value between calls; nothing to release, as the arena goes with the session |
 | `nix_get_external`, `nix_init_external` | nothing: no external values |
 | `nix_string_realise`, `nix_alloc_primop`, `nix_register_primop` | not mapped |
 
