@@ -602,3 +602,41 @@ fn sets_compare_in_the_symbol_order_of_nix() {
     assert_eq!(first(""), "{ success = false; value = false; }");
     assert_eq!(first("y"), "{ success = true; value = false; }");
 }
+
+/// `builder-rpc-v0` builders register their outputs themselves, so the
+/// environment holds no placeholder for them. The paths are Nix's.
+#[rstest]
+#[case::list(
+    CA,
+    "requiredSystemFeatures = [ \"builder-rpc-v0\" ];",
+    "hfx0mg11cj7g5b1ldb78lhm3vlcrg9hc"
+)]
+#[case::string(
+    CA,
+    "requiredSystemFeatures = \"kvm builder-rpc-v0\";",
+    "vsdi08jx2v1qg20bjx02gd4y6h85avrr"
+)]
+#[case::structured(
+    CA,
+    "__structuredAttrs = true; requiredSystemFeatures = [ \"builder-rpc-v0\" ];",
+    "lj3fkgvh7jaqlyaq2bbs478s6qha1w0a"
+)]
+#[case::fixed_output(
+    FOD,
+    "requiredSystemFeatures = [ \"builder-rpc-v0\" ];",
+    "kkx1jwyzrkygzcgj8gkbi56pwd5f60hx"
+)]
+fn builder_rpc_outputs_have_no_placeholder(
+    #[case] how: &str,
+    #[case] attrs: &str,
+    #[case] hash: &str,
+) {
+    let src = format!(
+        "(derivation {{ name = \"x\"; system = \"x86_64-linux\"; builder = \"/bin/sh\"; {how} {attrs} }}).drvPath"
+    );
+    assert_eq!(eval_str(&src), format!("\"/nix/store/{hash}-x.drv\""));
+}
+
+const CA: &str =
+    "__contentAddressed = true; outputHashMode = \"recursive\"; outputHashAlgo = \"sha256\";";
+const FOD: &str = "outputHashMode = \"flat\"; outputHash = \"sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=\";";
