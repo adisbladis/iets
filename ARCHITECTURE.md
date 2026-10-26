@@ -282,6 +282,7 @@ measure against, and defaults to the pinned source in the scripts;
 | `bench/nar.nu` | the NAR writer, reader and hashes; `--nix` adds the real-nix reference rows |
 | `bench/eval-jobs.nu [rounds]` | `iets eval-jobs` against `nix-eval-jobs` on `nixos/release-small.nix`, 4 workers, cold and warm cache runs interleaved; `--no-parity` skips the `--force-recurse` job-set comparison |
 | `bench/cache-growth.nu` | evaluates `bench/workloads/nixos-server.nix` at two nixpkgs revisions and reports what the second adds to each cache |
+| `bench/kept.nu` | a library host reading packages of an applied nixpkgs, with the root kept, applied again in one evaluator, or applied in a new session per read (`examples/kept_bench.rs`) |
 
 The two standard workloads:
 
