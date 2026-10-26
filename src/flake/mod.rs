@@ -458,24 +458,48 @@ pub fn select_output(ev: &mut Evaluator, fr: &FlakeRef, result: Word) -> EvalRes
             pos,
         ));
     };
-    let mut v = outputs.cell.get();
-    for (i, name) in fr.attr.iter().enumerate() {
-        let a = ev.force_attrs(v, pos, "while selecting a flake output attribute")?;
-        let sym = ev.sym(name.as_bytes());
-        let Some(attr) = a.get(sym) else {
-            return Err(EvalError::boxed(
-                ErrorKind::MissingAttr,
-                format!(
-                    "flake '{}' does not provide attribute '{}'",
-                    fr.dir.display(),
-                    fr.attr[..=i].join(".")
-                ),
-                pos,
-            ));
-        };
-        v = attr.cell.get();
+    let outputs = outputs.cell.get();
+    let candidates = output_candidates(&fr.attr, ev.current_system());
+    for path in &candidates {
+        if let Some(v) = select(ev, outputs, path)? {
+            return ev.force(v);
+        }
     }
-    ev.force(v)
+    let names: Vec<String> = candidates
+        .iter()
+        .map(|p| format!("'{}'", p.join(".")))
+        .collect();
+    let shown = match names.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} or {last}", rest.join(", ")),
+        _ => names.concat(),
+    };
+    Err(EvalError::boxed(
+        ErrorKind::MissingAttr,
+        format!(
+            "flake '{}' does not provide attribute {shown}",
+            fr.dir.display()
+        ),
+        pos,
+    ))
+}
+
+/// installable-flake.cc:getActualAttrPaths: `packages.<system>.`, then
+/// `legacyPackages.<system>.`, then the path itself; a leading `.` names
+/// the path from the root only. The empty path is the outputs.
+fn output_candidates(attr: &[String], system: &str) -> Vec<Vec<String>> {
+    match attr.split_first() {
+        None => vec![Vec::new()],
+        Some((first, rest)) if first.is_empty() => vec![rest.to_vec()],
+        Some(_) => ["packages", "legacyPackages"]
+            .iter()
+            .map(|set| {
+                let mut p = vec![set.to_string(), system.to_string()];
+                p.extend_from_slice(attr);
+                p
+            })
+            .chain([attr.to_vec()])
+            .collect(),
+    }
 }
 
 /// eval-cache.cc:AttrCursor::findAlongAttrPath: walks `path` from `v`, forcing each
