@@ -1181,6 +1181,11 @@ impl Arena {
 
     /// `alloc_list` with a stats bucket naming the producer.
     pub(crate) fn alloc_list_as(&mut self, n: usize, bucket: Stat) -> &'static ListObj {
+        if n == 0
+            && let Some(l) = self.empty_list
+        {
+            return l;
+        }
         let bytes = Self::list_bytes(n).expect("list size checked by the caller");
         self.stats.note(bucket, bytes);
         let p = self.alloc_raw(bytes, 8) as *mut ListObj;
@@ -1195,6 +1200,9 @@ impl Arena {
             ptr::write_bytes(cells, 0, n);
             #[cfg(feature = "stats2")]
             self.stats.census.note_list(p);
+            if n == 0 {
+                self.empty_list = Some(&*p);
+            }
             &*p
         }
     }
@@ -1327,6 +1335,14 @@ impl Arena {
         entries: &[(Sym, Pos, Word)],
         bucket: Stat,
     ) -> Word {
+        if entries.is_empty() {
+            if let Some(w) = self.empty_attrs {
+                return w;
+            }
+            let w = Word::from_ref(self.alloc_attrs_as(0, bucket));
+            self.empty_attrs = Some(w);
+            return w;
+        }
         let a = self.alloc_attrs_as(entries.len(), bucket);
         let slots = a.attrs_mut();
         for (slot, (sym, pos, w)) in slots.iter_mut().zip(entries) {

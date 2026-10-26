@@ -115,6 +115,8 @@ tags! {
         Global = 5,
         /// A `builtins` attribute.
         Builtin = 6,
+        EmptyList = 7,
+        EmptyAttrs = 8,
     }
 }
 
@@ -450,11 +452,11 @@ impl Ser {
                 }
                 // the compiler's `[ ]` and `{ }`
                 Some(Kind::List) if w.as_list().is_some_and(|l| l.len == 0) => {
-                    self.out.push(7);
+                    self.tag(ConstTag::EmptyList);
                     return;
                 }
                 Some(Kind::Attrs) if w.as_attrs().is_some_and(|a| a.is_empty()) => {
-                    self.out.push(8);
+                    self.tag(ConstTag::EmptyAttrs);
                     return;
                 }
                 Some(Kind::Int) => {
@@ -1024,8 +1026,8 @@ impl<'a> De<'a, '_> {
                 }
                 self.ev.arena.mk_int(i64::from_le_bytes(raw))
             }
-            7 => self.ev.arena.mk_list(&[]),
-            8 => self.ev.arena.mk_attrs_sorted(&[]),
+            Some(ConstTag::EmptyList) => self.ev.arena.mk_list(&[]),
+            Some(ConstTag::EmptyAttrs) => self.ev.arena.mk_attrs_sorted(&[]),
             Some(ConstTag::Global) => {
                 let s = self.sym();
                 match self.ev.globals.table.get(&s) {

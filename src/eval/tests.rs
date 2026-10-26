@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use super::{ErrorKind, EvalConfig, Evaluator};
+use super::{ErrorKind, EvalConfig, Evaluator, Pos};
 use rstest::rstest;
 
 use crate::print;
@@ -99,6 +99,31 @@ fn lambda_params_read_or_ignored(#[case] src: &str, #[case] want: &str) {
 #[case::dynamic_is_not_empty(r#"let n = "a"; in { ${n} = 1; }"#, "{ a = 1; }")]
 fn empty_literals(#[case] src: &str, #[case] want: &str) {
     assert_eq!(eval_str(src), want);
+}
+
+#[test]
+fn every_empty_list_and_set_is_one_object() {
+    let mut ev = Evaluator::new();
+    let list = ev.mk_list(&[]);
+    let attrs = ev.empty_attrs();
+    let made = ev
+        .eval_string(
+            "[ [ ] { } (builtins.filter (x: false) [ 1 ]) (removeAttrs { a = 1; } [ \"a\" ]) ]",
+            b"/",
+        )
+        .and_then(|v| ev.force_deep(v))
+        .unwrap();
+    let items: Vec<_> = ev
+        .force_list(made, Pos::NONE, "")
+        .unwrap()
+        .cells()
+        .iter()
+        .map(|c| c.get())
+        .collect();
+    assert_eq!(list, ev.mk_list(&[]));
+    assert_eq!(attrs, ev.empty_attrs());
+    assert_eq!([items[0], items[2]], [list, list]);
+    assert_eq!([items[1], items[3]], [attrs, attrs]);
 }
 
 #[test]

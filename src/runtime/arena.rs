@@ -10,7 +10,7 @@ use std::{process, ptr, slice};
 #[cfg(feature = "stats2")]
 use super::census::Census;
 use super::heap::Heap;
-use super::value::Ctx;
+use super::value::{Ctx, ListObj};
 use super::word::Word;
 use crate::parallel::shared::ArenaUse;
 use crate::session::Session;
@@ -60,6 +60,10 @@ pub struct Arena {
     /// The session memory the chunks belong to; `None` for a placeholder
     /// until it first allocates.
     heap: Option<Arc<Heap>>,
+    /// The one `[ ]` and the one `{ }`, made on first use. Nothing writes
+    /// to an object without entries, so every empty one can be this one.
+    pub(crate) empty_list: Option<&'static ListObj>,
+    pub(crate) empty_attrs: Option<Word>,
 }
 
 /// Position of the bump pointer, to give back the last allocation.
@@ -103,6 +107,8 @@ impl Arena {
             strings: FxHashMap::default(),
             ctxs: FxHashSet::default(),
             heap: None,
+            empty_list: None,
+            empty_attrs: None,
         }
     }
 
