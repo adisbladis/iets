@@ -25,7 +25,7 @@ use crate::store::path::{
 };
 use crate::syntax::symbol::Sym;
 use crate::trace::{self, Trace};
-use crate::{log, parallel, provenance};
+use crate::{config, log, parallel, provenance};
 
 pub fn register(r: &mut Registry) {
     r.op("derivationStrict", 1, derivation_strict);
@@ -108,6 +108,7 @@ struct DrvSyms {
     output_hash_mode: Sym,
     outputs: Sym,
     structured_attrs: Sym,
+    required_system_features: Sym,
     ignore_nulls: Sym,
     content_addressed: Sym,
     impure: Sym,
@@ -128,6 +129,7 @@ fn syms(ev: &mut Evaluator) -> DrvSyms {
         output_hash_mode: ev.sym(b"outputHashMode"),
         outputs: ev.sym(b"outputs"),
         structured_attrs: ev.sym(b"__structuredAttrs"),
+        required_system_features: ev.sym(b"requiredSystemFeatures"),
         ignore_nulls: ev.sym(b"__ignoreNulls"),
         content_addressed: ev.sym(b"__contentAddressed"),
         impure: ev.sym(b"__impure"),
@@ -214,6 +216,9 @@ struct Builder<'a> {
     /// The structured-attrs JSON object under construction, when
     /// `__structuredAttrs = true`.
     json: Option<Vec<u8>>,
+    /// `requiredSystemFeatures` holds `builder-rpc-v0`: the builder
+    /// registers its outputs, so the environment names none.
+    submits_outputs: bool,
     /// The derivation's own site for `drv-bool-null` and `drv-list`
     /// (`lint::coerce::drv_owner`); `None` keeps both silent.
     lint_owner: Option<Pos>,
@@ -269,6 +274,15 @@ impl Builder<'_> {
         }
         Ok(())
     }
+}
+
+/// derivations.hh:drvFeatureBuilderRpcV0.
+const BUILDER_RPC_V0: &[u8] = b"builder-rpc-v0";
+
+/// primops.cc reads `requiredSystemFeatures` only with this feature on;
+/// iets's own commands have every feature.
+fn dynamic_derivations() -> bool {
+    !log::classic() || config::xp_on("dynamic-derivations")
 }
 
 /// One iteration of the attribute loop in derivationStrictInternal. `key`
@@ -357,6 +371,15 @@ fn process_attr(
                 names.push(utf8(st, pos)?);
             }
             b.handle_outputs(names.iter().map(String::as_str), pos)?;
+        } else if sym == s.required_system_features && dynamic_derivations() {
+            let l = ev.force_list(w, pos, "")?;
+            for c in l.cells() {
+                let st = ev.force_string(c.get(), pos, "")?;
+                if st.bytes == BUILDER_RPC_V0 {
+                    b.submits_outputs = true;
+                    break;
+                }
+            }
         }
         return Ok(());
     }
@@ -377,6 +400,11 @@ fn process_attr(
         s.outputs,
     ]
     .contains(&sym);
+    if sym == s.required_system_features && dynamic_derivations() {
+        b.submits_outputs |= raw
+            .split(|c| b" \t\n\r".contains(c))
+            .any(|f| f == BUILDER_RPC_V0);
+    }
     if !is_text {
         b.drv.env.push((key.to_string(), raw.into_owned()));
         return Ok(());
@@ -470,6 +498,7 @@ fn derivation_strict_internal(
         ingestion_method: None,
         outputs: ["out".to_string()].into_iter().collect(),
         json: json_mode.then(|| vec![b'{']),
+        submits_outputs: false,
         lint_owner,
     };
 
@@ -506,6 +535,7 @@ fn derivation_strict_internal(
         ingestion_method,
         outputs,
         json,
+        submits_outputs,
         ..
     } = b;
 
@@ -634,13 +664,17 @@ fn derivation_strict_internal(
             .fixed_path(drv_name, "out")
             .map_err(|e| drv_err(e, pos))?
             .expect("fixed output has a path");
-        drv.env_set("out", path.to_string().into_bytes());
+        if !submits_outputs {
+            drv.env_set("out", path.to_string().into_bytes());
+        }
         drv.outputs.insert("out".into(), out);
     } else if content_addressed {
         let algo = output_hash_algo.unwrap_or(HashAlgo::Sha256);
         let method = ingestion_method.unwrap_or(IngestionMethod::Recursive);
         for o in &outputs {
-            drv.env_set(o, hash_placeholder(o).into_bytes());
+            if !submits_outputs {
+                drv.env_set(o, hash_placeholder(o).into_bytes());
+            }
             drv.outputs
                 .insert(o.clone(), DerivationOutput::CaFloating { method, algo });
         }
