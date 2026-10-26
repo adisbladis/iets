@@ -4,7 +4,9 @@
 //! holds. The shared lifetime is the whole safety story: a `Value<'e>` can
 //! only exist while the evaluator is borrowed, so it can never outlive the
 //! arena it points into. Nothing here exposes `runtime::Word`, an arena
-//! pointer or a tag.
+//! pointer or a tag. A [`Kept`] value outlives the borrow, and becomes a
+//! `Value` again only under a borrow of the evaluator that kept it, which
+//! holds the arena.
 //!
 //! The layer is thin: every getter is the load the evaluator itself does.
 //! Only the constructors allocate (docs/reference/library.md).
@@ -13,6 +15,7 @@ use std::fmt::{self, Debug, Formatter};
 use std::marker::PhantomData;
 
 use crate::eval::{Error, EvalResult, Evaluator, Pos};
+use crate::parallel::interner::TableId;
 use crate::runtime::value::Value as View;
 use crate::runtime::{Ctx, Word};
 
@@ -206,6 +209,24 @@ impl<'e> Value<'e> {
     }
 }
 
+/// A value kept past the borrow that made it, for [`Eval::get`] under a
+/// later borrow of the same evaluator. It holds none of the session: the
+/// evaluator does, and the value is read only through it.
+#[derive(Clone)]
+pub struct Kept {
+    w: Word,
+    /// The symbol table of the evaluator that kept it, which only that
+    /// evaluator and its fibers share.
+    table: TableId,
+}
+
+impl Debug for Kept {
+    // the session may be gone, so the word is not read
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str("Kept")
+    }
+}
+
 /// An evaluator, borrowed for the life of the values it hands out. Every
 /// operation that may evaluate, intern a name or allocate goes through it.
 pub struct Eval<'e> {
@@ -220,6 +241,24 @@ impl<'e> Eval<'e> {
     /// The evaluator itself, for the parts of the library that take one.
     pub fn evaluator(&mut self) -> &mut Evaluator {
         self.ev
+    }
+
+    /// `v`, kept for a later borrow of this evaluator. Nothing is copied:
+    /// a value lives as long as its session, kept or not.
+    pub fn keep(&self, v: Value<'e>) -> Kept {
+        Kept {
+            w: v.w,
+            table: self.ev.interner.id(),
+        }
+    }
+
+    /// The kept value, or `None` when another evaluator kept it. A kept
+    /// thunk comes back a thunk; once forced under any borrow, forcing it
+    /// again reads its value.
+    pub fn get(&self, k: &Kept) -> Option<Value<'e>> {
+        // the names in `k` are ids in its evaluator's table, and that
+        // evaluator, borrowed here, holds the arena `k` points into
+        self.ev.interner.has_id(&k.table).then_some(val(k.w))
     }
 
     /// Evaluate an expression; relative paths resolve against `base_dir`.
@@ -329,6 +368,11 @@ impl<'e> Eval<'e> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::eval::{ErrorKind, EvalConfig};
+    use crate::runtime::heap::tests::{UNMAPPED, limit};
+    use crate::runtime::heap::{Release, is_released};
+    use crate::session::Session;
 
     fn eval<R>(src: &str, f: impl for<'e> FnOnce(&mut Eval<'e>, Value<'e>) -> R) -> R {
         let mut ev = Evaluator::new();
@@ -526,5 +570,168 @@ mod tests {
             let a = e.attr(v, b"a").unwrap().unwrap();
             assert_eq!(a.list_get(0).unwrap().as_int(), Some(2));
         });
+    }
+
+    /// `src`, evaluated and forced under a borrow of its own, then kept.
+    fn kept(ev: &mut Evaluator, src: &str) -> Kept {
+        let mut e = Eval::new(ev);
+        let v = e.eval_expr(src, b"/").expect("eval");
+        let v = e.force(v).expect("force");
+        e.keep(v)
+    }
+
+    /// Attribute `name` of the kept set `k`, forced under a borrow of its own.
+    fn force_attr(ev: &mut Evaluator, k: &Kept, name: &str) -> EvalResult<i64> {
+        let mut e = Eval::new(ev);
+        let set = e.get(k).expect("kept by this evaluator");
+        let v = e.attr(set, name.as_bytes())?.expect("an attribute");
+        Ok(e.force(v)?.as_int().expect("an int"))
+    }
+
+    #[test]
+    fn a_kept_value_is_read_under_a_later_borrow() {
+        let mut ev = Evaluator::new();
+        let k = kept(&mut ev, r#"{ s = "x"; l = [ 1 2 ]; }"#);
+        let mut e = Eval::new(&mut ev);
+        let v = e.get(&k).unwrap();
+        assert_eq!(v.attrs_len(), Some(2));
+        let s = e.attr(v, b"s").unwrap().unwrap();
+        assert_eq!(e.force(s).unwrap().as_bytes(), Some(&b"x"[..]));
+        let l = e.attr(v, b"l").unwrap().unwrap();
+        assert_eq!(e.force(l).unwrap().list_len(), Some(2));
+    }
+
+    /// A thunk object, and a `mapAttrs` entry, which has none.
+    #[test]
+    fn a_thunk_forced_under_one_borrow_is_a_value_under_the_next() {
+        let sum = "builtins.foldl' (a: b: a + b) 0 (builtins.genList (i: i) 1000)";
+        let cases = [
+            (format!("{{ t = {sum}; }}"), 499500),
+            (
+                "builtins.mapAttrs (n: v: v * 2) { t = 21; }".to_string(),
+                42,
+            ),
+        ];
+        for (src, want) in cases {
+            let mut ev = Evaluator::new();
+            let set = kept(&mut ev, &src);
+            let t = {
+                let mut e = Eval::new(&mut ev);
+                let set = e.get(&set).unwrap();
+                let t = e.attr(set, b"t").unwrap().unwrap();
+                assert_eq!(t.kind(), ValueKind::Thunk);
+                e.keep(t)
+            };
+            let before = ev.nr_function_calls;
+            {
+                let mut e = Eval::new(&mut ev);
+                let t = e.get(&t).unwrap();
+                assert_eq!(e.force(t).unwrap().as_int(), Some(want));
+            }
+            let forced = ev.nr_function_calls;
+            assert!(forced > before, "{src}");
+            {
+                let mut e = Eval::new(&mut ev);
+                let t = e.get(&t).unwrap();
+                assert_eq!(t.kind(), ValueKind::Thunk);
+                assert_eq!(e.force(t).unwrap().as_int(), Some(want));
+            }
+            assert_eq!(force_attr(&mut ev, &set, "t").unwrap(), want);
+            assert_eq!(ev.nr_function_calls, forced, "{src}");
+        }
+    }
+
+    #[test]
+    fn a_kept_set_is_read_by_name_many_times() {
+        let mut ev = Evaluator::new();
+        let n = 200;
+        let src = format!(
+            r#"builtins.listToAttrs (builtins.genList (i: {{ name = "a${{toString i}}"; value = i * i; }}) {n})"#
+        );
+        let set = kept(&mut ev, &src);
+        let mut after = Vec::new();
+        for _ in 0..3 {
+            for i in 0..n {
+                let v = force_attr(&mut ev, &set, &format!("a{i}")).unwrap();
+                assert_eq!(v, i * i);
+            }
+            after.push((ev.nr_function_calls, ev.arena.bytes_allocated));
+        }
+        // the set is made once, and a read of what is forced evaluates and
+        // allocates nothing
+        assert_eq!(after[0], after[1]);
+        assert_eq!(after[1], after[2]);
+    }
+
+    #[test]
+    fn an_error_under_one_borrow_leaves_the_thunk_for_the_next() {
+        let mut ev = Evaluator::new();
+        let set = kept(&mut ev, r#"{ bad = throw "no"; good = 1; }"#);
+        for _ in 0..2 {
+            // put back, not left claimed: a claimed thunk would report
+            // infinite recursion
+            let err = force_attr(&mut ev, &set, "bad").unwrap_err();
+            assert_eq!(err.kind, ErrorKind::Throw, "{}", err.msg);
+            assert_eq!(force_attr(&mut ev, &set, "good").unwrap(), 1);
+        }
+    }
+
+    /// A failed thunk is evaluated again, so a refusal of memory lifted
+    /// between two borrows lets it succeed.
+    #[test]
+    fn a_thunk_refused_under_one_borrow_succeeds_under_the_next() {
+        let s = Session::new();
+        let mut ev = EvalConfig::new().session(s.clone()).build();
+        // each step copies the list, about 64 MB in all
+        let grow = "builtins.foldl' (acc: i: acc ++ [ i ]) [ ] (builtins.genList (x: x) 4000)";
+        let set = kept(&mut ev, &format!("{{ n = builtins.length ({grow}); }}"));
+        let (strict, _) = limit(s.heap.bytes());
+        s.heap.join(&strict);
+        let err = force_attr(&mut ev, &set, "n").unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Budget, "{}", err.msg);
+        let (free, _) = limit(usize::MAX);
+        s.heap.join(&free);
+        assert_eq!(force_attr(&mut ev, &set, "n").unwrap(), 4000);
+    }
+
+    #[test]
+    fn a_kept_value_is_read_only_through_its_evaluator() {
+        let s = Session::new();
+        let mut a = EvalConfig::new().session(s.clone()).build();
+        let mut b = EvalConfig::new().session(s).build();
+        let k = kept(&mut a, "{ x = 1; }");
+        // same session, but the names are ids in `a`'s table
+        assert!(Eval::new(&mut b).get(&k).is_none());
+        assert!(Eval::new(&mut a).get(&k).is_some());
+    }
+
+    /// A kept value holds none of its session: the session is released
+    /// when its evaluator goes, and the value is never read again.
+    #[test]
+    fn a_session_is_released_with_values_kept() {
+        for release in [Release::Revoke, Release::Unmap] {
+            let (group, _) = limit(usize::MAX);
+            let s = Session::new();
+            s.heap.join(&group);
+            s.heap.set_release(release);
+            let mut ev = EvalConfig::new().session(s.clone()).build();
+            let k = kept(&mut ev, "builtins.genList (i: { n = i; }) 100");
+            let at = k.w.bits() as usize & 0xffff_ffff_fff8;
+            let unmapped = UNMAPPED.with(|u| u.get());
+            drop(ev);
+            drop(s);
+            assert_eq!(group.bytes(), 0);
+            assert_eq!(is_released(at), release == Release::Revoke);
+            let gone = UNMAPPED.with(|u| u.get()) - unmapped;
+            assert_eq!(gone > 0, release == Release::Unmap);
+            let mut other = Evaluator::new();
+            assert!(Eval::new(&mut other).get(&k).is_none());
+        }
+    }
+
+    #[test]
+    fn kept_is_send_and_sync() {
+        fn both<T: Send + Sync>() {}
+        both::<Kept>();
     }
 }
