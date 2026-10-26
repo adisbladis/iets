@@ -63,6 +63,21 @@ fn intersect_attrs_matches_a_filter(#[case] l: &str, #[case] r: &str) {
 #[case::inherit("(x: { inherit x; }) 1", "{ x = 1; }")]
 #[case::interpolation(r#"(x: "${x}") "s""#, r#""s""#)]
 #[case::find_file(r#"(__findFile: <p>) (_: _: "found")"#, r#""found""#)]
+#[case::curried_full("(a: b: c: [ a b c ]) 1 2 3", "[ 1 2 3 ]")]
+#[case::curried_partial(
+    "let f = a: b: c: [ a b c ]; g = f 1; h = g 2; in [ (h 3) (h 4) (g 5 6) ]",
+    "[ [ 1 2 3 ] [ 1 2 4 ] [ 1 5 6 ] ]"
+)]
+#[case::inner_shadows_outer("(a: a: a) 1 2", "2")]
+#[case::let_shadows_param("(x: let x = 2; y = x; in y) 1", "2")]
+#[case::let_reads_param("(x: let y = x + 1; in [ x y ]) 1", "[ 1 2 ]")]
+#[case::let_inherits_param("(x: let inherit x; in x) 1", "1")]
+#[case::let_inherit_from("(x: let inherit (x) a; in a) { a = 1; }", "1")]
+#[case::default_skips_let("let y = 1; in ({ a ? y }: let y = 2; in a) { }", "1")]
+#[case::formals_curried("({ a }: { b }: let c = a + b; in c) { a = 1; } { b = 2; }", "3")]
+#[case::empty_formals("({ }: b: b) { } 1", "1")]
+#[case::closure_in_merged("let f = a: b: (c: [ a b c ]); in (f 1 2) 3", "[ 1 2 3 ]")]
+#[case::through_builtin("builtins.mapAttrs (n: v: n + v) { a = \"x\"; }", r#"{ a = "ax"; }"#)]
 fn lambda_params_read_or_ignored(#[case] src: &str, #[case] want: &str) {
     assert_eq!(eval_str(src), want);
 }

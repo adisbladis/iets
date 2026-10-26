@@ -600,8 +600,12 @@ struct De<'a, 'e> {
     /// entry costs at least one byte, so the entry's own length is the
     /// bound, and a crafted count cannot make the arena grow without one.
     budget: usize,
-    /// One entry per scope the compiler pushed, innermost last.
+    /// One entry per frame the compiler opened, innermost last.
     frames: Vec<Frame>,
+    /// Slots of the innermost frame when the next node is the body of the
+    /// lambda that frame belongs to: a lambda or `let` there extends it
+    /// (`Compiler::lambda_body`).
+    body_of: Option<usize>,
     nest: u32,
     ok: bool,
 }
@@ -630,6 +634,7 @@ pub fn deserialize(
         span,
         budget: data.len(),
         frames: Vec::new(),
+        body_of: None,
         nest: 0,
         ok: true,
     };
@@ -691,6 +696,30 @@ pub fn deserialize(
         Some((ir, diags, allows))
     } else {
         None
+    }
+}
+
+impl Frame {
+    /// Appends `n` slots, permuted by `perm` (relative to the first of
+    /// them) when given; the old size is the new slots' base.
+    fn extend(&mut self, n: usize, perm: Option<&[u32]>) -> usize {
+        let base = self.slots;
+        if perm.is_some() || self.perm.is_some() {
+            let p = self.perm.get_or_insert_with(|| (0..base as u32).collect());
+            match perm {
+                Some(q) => p.extend(q.iter().map(|i| i + base as u32)),
+                None => p.extend(base as u32..(base + n) as u32),
+            }
+        }
+        self.slots += n;
+        base
+    }
+
+    fn truncate(&mut self, base: usize) {
+        self.slots = base;
+        if let Some(p) = &mut self.perm {
+            p.truncate(base);
+        }
     }
 }
 
@@ -925,6 +954,33 @@ impl<'a> De<'a, '_> {
         Some(perm)
     }
 
+    /// A frame of `n` slots, or `n` more slots of the innermost one when
+    /// `extend`; returns the slot the new ones start at.
+    fn open_frame(&mut self, extend: bool, n: usize, perm: Option<Vec<u32>>) -> usize {
+        match self.frames.last_mut() {
+            Some(f) if extend => f.extend(n, perm.as_deref()),
+            _ => {
+                self.frames.push(Frame {
+                    slots: n,
+                    with: false,
+                    perm,
+                });
+                0
+            }
+        }
+    }
+
+    /// Undoes `open_frame`.
+    fn close_frame(&mut self, extend: bool, at: usize) {
+        if extend {
+            if let Some(f) = self.frames.last_mut() {
+                f.truncate(at);
+            }
+        } else {
+            self.frames.pop();
+        }
+    }
+
     fn frame_of(&self, depth: u32) -> Option<&Frame> {
         let n = self.frames.len();
         let i = n.checked_sub(depth as usize + 1)?;
@@ -935,7 +991,13 @@ impl<'a> De<'a, '_> {
     /// `sorted` frames (`let`, `rec`) are pushed while their values and
     /// `from` expressions load; a plain set's `inherit (e)` selects load
     /// under the anonymous from-env instead.
-    fn binds(&mut self, sorted: bool) -> (&'static [BindIr], &'static [IrRef]) {
+    /// With `extend`, a `let` whose slots extend the innermost frame; the
+    /// slot they start at comes back with the binds.
+    fn binds(
+        &mut self,
+        sorted: bool,
+        extend: bool,
+    ) -> (&'static [BindIr], &'static [IrRef], usize) {
         let n = self.count();
         let mut syms = Vec::with_capacity(n);
         let mut poss = Vec::with_capacity(n);
@@ -960,13 +1022,11 @@ impl<'a> De<'a, '_> {
             self.ok = false;
         }
         let perm = Self::perm(&syms, if sorted { nfrom } else { 0 });
-        if sorted {
-            self.frames.push(Frame {
-                slots: n + nfrom,
-                with: false,
-                perm: perm.clone(),
-            });
-        }
+        let at = if sorted {
+            self.open_frame(extend, n + nfrom, perm.clone())
+        } else {
+            0
+        };
         let out = self.fill(n, |_| BindIr {
             sym: Sym(0),
             value: &Ir::Const(Word::NULL),
@@ -981,9 +1041,18 @@ impl<'a> De<'a, '_> {
                 break;
             }
             let value = match scopes[i] {
+                // `inherit x` reads the scope outside the binds
                 BindScope::Outer if sorted => {
-                    let f = self.frames.pop();
+                    let f = if extend {
+                        self.close_frame(true, at);
+                        None
+                    } else {
+                        self.frames.pop()
+                    };
                     let v = self.node();
+                    if extend {
+                        self.open_frame(true, n + nfrom, perm.clone());
+                    }
                     self.frames.extend(f);
                     v
                 }
@@ -1004,10 +1073,12 @@ impl<'a> De<'a, '_> {
             };
         }
         let from = self.fill(nfrom, |d| d.node());
-        (out, from)
+        (out, from, at)
     }
 
     fn node(&mut self) -> IrRef {
+        // only the node right after the params of a lambda is its body
+        let body_of = self.body_of.take();
         if !self.ok || self.nest >= MAX_NEST {
             self.ok &= self.nest < MAX_NEST;
             return &Ir::Const(Word::NULL);
@@ -1106,7 +1177,7 @@ impl<'a> De<'a, '_> {
             9 => {
                 let rec = self.u8() != 0;
                 let pos = self.pos();
-                let (binds, from) = self.binds(rec);
+                let (binds, from, _) = self.binds(rec, false);
                 let ndyn = self.count();
                 let dynamic = self.fill(ndyn, |d| {
                     let name = d.node();
@@ -1134,11 +1205,15 @@ impl<'a> De<'a, '_> {
             }
             10 => Ir::List(self.nodes()),
             11 => {
+                let extend = body_of.is_some_and(|n| n > 0);
                 let tag = self.u8();
                 let framed = tag != 2;
+                let mut at = 0;
+                let mut end = 0;
                 let param = if tag != 1 {
                     if framed {
-                        self.frames.push(Self::plain(1, false));
+                        at = self.open_frame(extend, 1, None);
+                        end = at + 1;
                     }
                     ParamIr::Ident
                 } else {
@@ -1153,18 +1228,16 @@ impl<'a> De<'a, '_> {
                     }
                     let fperm = Self::perm(&syms, 0);
                     let off = u32::from(has_bind);
-                    self.frames.push(Frame {
-                        slots: n + off as usize,
-                        with: false,
-                        perm: fperm.as_ref().map(|fp| {
-                            let mut perm = Vec::with_capacity(n + off as usize);
-                            if has_bind {
-                                perm.push(0);
-                            }
-                            perm.extend(fp.iter().map(|p| p + off));
-                            perm
-                        }),
+                    let perm = fperm.as_ref().map(|fp| {
+                        let mut perm = Vec::with_capacity(n + off as usize);
+                        if has_bind {
+                            perm.push(0);
+                        }
+                        perm.extend(fp.iter().map(|p| p + off));
+                        perm
                     });
+                    at = self.open_frame(extend, n + off as usize, perm);
+                    end = at + n + off as usize;
                     let formals = self.fill(n, |_| FormalIr {
                         sym: Sym(0),
                         default: None,
@@ -1188,14 +1261,23 @@ impl<'a> De<'a, '_> {
                         ellipsis,
                     }
                 };
+                if framed {
+                    self.body_of = Some(end);
+                }
                 let body = self.node();
                 if framed {
-                    self.frames.pop();
+                    self.close_frame(extend, at);
                 }
                 let pos = self.pos();
                 let name = self.opt_sym();
                 let arg = self.opt_sym();
                 let closed = self.u8() != 0;
+                let frame = match body {
+                    Ir::Let(l) if l.base != LetIr::OWN_ENV => {
+                        l.base as usize + l.binds.len() + l.from.len()
+                    }
+                    _ => end,
+                };
                 Ir::Lambda(self.ev.arena.alloc(LambdaIr {
                     param,
                     body,
@@ -1204,6 +1286,8 @@ impl<'a> De<'a, '_> {
                     arg,
                     closed,
                     no_env: !framed,
+                    base: at as u32,
+                    frame: frame as u32,
                 }))
             }
             12 => {
@@ -1213,10 +1297,16 @@ impl<'a> De<'a, '_> {
                 Ir::Apply { func, args, pos }
             }
             13 => {
-                let (binds, from) = self.binds(true);
+                let extend = body_of.is_some_and(|n| n > 0);
+                let (binds, from, at) = self.binds(true, extend);
                 let body = self.node();
-                self.frames.pop();
-                Ir::Let(self.ev.arena.alloc(LetIr { binds, from, body }))
+                self.close_frame(extend, at);
+                Ir::Let(self.ev.arena.alloc(LetIr {
+                    binds,
+                    from,
+                    body,
+                    base: if extend { at as u32 } else { LetIr::OWN_ENV },
+                }))
             }
             14 => {
                 let scope = self.node();
@@ -1394,6 +1484,8 @@ mod tests {
             "let f = { x, y ? x + 1, ... }@all: [ x y all ]; in f { x = 4; z = 9; }\n",
             "rec { a = 1; b = a + 1; c = [ b \"s\" ./p 2.5 true null ]; }\n",
             "let g = a: with { x = a; }; { inherit x; y = builtins.add x 1; }; in g 7\n",
+            // frames extended by a body lambda and a body `let`
+            "let f = s: { b ? s.a }: c: let inherit (s) a; d = [ a b c ]; inherit c; in d; in [ (f { a = 1; } { } 3) ((f { a = 2; }) { b = 4; } 5) ]\n",
         ];
         for (n, src) in CASES.iter().enumerate() {
             let path = format!("/t/fuzz{n}.nix").into_bytes();
