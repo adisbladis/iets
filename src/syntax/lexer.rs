@@ -197,13 +197,34 @@ pub struct Lexer<'a> {
 
 #[inline]
 fn is_id_char(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_' || b == b'\'' || b == b'-'
+    CLASS[b as usize] & ID != 0
 }
 
 #[inline]
 fn is_path_char(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'.' || b == b'_' || b == b'-' || b == b'+'
+    CLASS[b as usize] & PATH != 0
 }
+
+const ID: u8 = 1;
+const PATH: u8 = 2;
+
+/// One load per byte where the two tests above made up to six compares.
+static CLASS: [u8; 256] = {
+    let mut t = [0u8; 256];
+    let mut b = 0;
+    while b < 256 {
+        let c = b as u8;
+        let alnum = c.is_ascii_alphanumeric();
+        if alnum || c == b'_' || c == b'\'' || c == b'-' {
+            t[b] |= ID;
+        }
+        if alnum || c == b'.' || c == b'_' || c == b'-' || c == b'+' {
+            t[b] |= PATH;
+        }
+        b += 1;
+    }
+    t
+};
 
 #[inline]
 fn is_uri_scheme_char(b: u8) -> bool {
@@ -313,10 +334,7 @@ impl<'a> Lexer<'a> {
     fn comment(&mut self) {
         let src = self.src;
         let start = self.pos;
-        let mut i = start;
-        while i < src.len() && src[i] != b'\n' && src[i] != b'\r' {
-            i += 1;
-        }
+        let i = memchr::memchr2(b'\n', b'\r', &src[start..]).map_or(src.len(), |k| start + k);
         self.pos = i;
         if self.at(start + 2) == b'i'
             && src[start..i].starts_with(b"# iets:")
@@ -345,26 +363,27 @@ impl<'a> Lexer<'a> {
     #[inline(always)]
     fn skip_trivia(&mut self) {
         let src = self.src;
-        while self.pos < src.len() {
-            match src[self.pos] {
-                b' ' | b'\t' | b'\r' | b'\n' => self.pos += 1,
-                b'#' => self.comment(),
-                b'/' if self.at(self.pos + 1) == b'*' => {
-                    let mut i = self.pos + 2;
-                    loop {
-                        if i + 1 >= src.len() {
-                            return;
-                        }
-                        if src[i] == b'*' && src[i + 1] == b'/' {
-                            self.pos = i + 2;
-                            break;
-                        }
-                        i += 1;
+        // a local, so the loop does not store `pos` for every byte
+        let mut p = self.pos;
+        while p < src.len() {
+            match src[p] {
+                b' ' | b'\t' | b'\r' | b'\n' => p += 1,
+                b'#' => {
+                    self.pos = p;
+                    self.comment();
+                    p = self.pos;
+                }
+                b'/' if self.at(p + 1) == b'*' => {
+                    let body = p + 2;
+                    match memchr::memmem::find(&src[body.min(src.len())..], b"*/") {
+                        Some(k) => p = body + k + 2,
+                        None => break,
                     }
                 }
-                _ => return,
+                _ => break,
             }
         }
+        self.pos = p;
     }
 
     /// `PATH_CHAR* ('/' PATH_CHAR+)+ '/'?` starting at `p`.
@@ -747,6 +766,9 @@ impl<'a> Lexer<'a> {
         let (start, base) = (self.pos, out.len());
         let end = self.str_chunk(out);
         // lexer.l:unescapeStr tests the raw bytes, so an escaped NUL passes
+        if memchr::memchr(0, &self.src[start..self.pos]).is_none() {
+            return end;
+        }
         let mut i = start;
         while i < self.pos {
             match self.src[i] {
@@ -813,9 +835,11 @@ impl<'a> Lexer<'a> {
                 }
                 _ => {
                     let run_start = self.pos;
-                    let mut i = self.pos + 1;
-                    while i < src.len() && !matches!(src[i], b'"' | b'\\' | b'\r' | b'$') {
-                        i += 1;
+                    let rest = &src[run_start + 1..];
+                    let mut i = memchr::memchr3(b'"', b'\\', b'$', rest)
+                        .map_or(src.len(), |k| run_start + 1 + k);
+                    if let Some(k) = memchr::memchr(b'\r', &src[run_start + 1..i]) {
+                        i = run_start + 1 + k;
                     }
                     out.extend_from_slice(&src[run_start..i]);
                     self.pos = i;
@@ -863,7 +887,12 @@ impl<'a> Lexer<'a> {
             }
             let start = self.pos;
             let mut i = start;
-            while i < src.len() {
+            loop {
+                let Some(k) = memchr::memchr2(b'\'', b'$', &src[i..]) else {
+                    i = src.len();
+                    break;
+                };
+                i += k;
                 match src[i] {
                     b'\'' => {
                         let n = self.at(i + 1);
@@ -879,7 +908,7 @@ impl<'a> Lexer<'a> {
                         }
                         i += 2;
                     }
-                    _ => i += 1,
+                    _ => unreachable!("memchr2 stops at ' or $"),
                 }
             }
             if i > start {
