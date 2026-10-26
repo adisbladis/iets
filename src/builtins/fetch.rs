@@ -172,7 +172,41 @@ pub(crate) fn path_nar_hash(
     })
 }
 
+/// Where the store holds the store path `source` that `hash` names, the
+/// `lastModified` a `path` input that `hash` locks reads with, unhashed:
+/// path.cc reads that store path in place when it is `path`, with 0, and
+/// fetchers.cc:Input::fetchToStore takes a final input from the store with
+/// its attrs as given, so with none of its own. `None` otherwise, and `path`
+/// is hashed.
+pub(crate) fn held_tree(
+    ev: &mut Evaluator,
+    path: &str,
+    hash: &Hash,
+    is_final: bool,
+) -> Option<Option<i64>> {
+    let sp = treestore::store_path("source", hash).ok()?;
+    let full = sp.to_full_string();
+    let is_store_path = full == path;
+    if !(is_store_path || is_final)
+        || !source::valid_in_store(ev, &sp, IngestionMethod::Recursive, hash)
+    {
+        return None;
+    }
+    ev.known.add_on_disk(sp);
+    Some(is_store_path.then_some(0))
+}
+
 pub fn fetch_tree(ev: &mut Evaluator, args: &[Word], pos: Pos) -> EvalResult<Word> {
+    fetch(ev, args, pos, false)
+}
+
+/// fetchTree.cc:prim_fetchFinalTree, what `call-flake.nix` fetches a lock
+/// file's inputs with: a lock file entry is final.
+pub fn fetch_final_tree(ev: &mut Evaluator, args: &[Word], pos: Pos) -> EvalResult<Word> {
+    fetch(ev, args, pos, true)
+}
+
+fn fetch(ev: &mut Evaluator, args: &[Word], pos: Pos, is_final: bool) -> EvalResult<Word> {
     purity::unhashed_fetch(ev, "fetchTree", args[0], pos)?;
     let mut attrs = collect_attrs(ev, args[0], pos)?;
     if ev.pure() {
@@ -200,7 +234,12 @@ pub fn fetch_tree(ev: &mut Evaluator, args: &[Word], pos: Pos) -> EvalResult<Wor
                 .map(parse_nar_hash)
                 .transpose()
                 .map_err(|e| Error::boxed(ErrorKind::Eval, e.to_string(), pos))?;
-            let (hash, mtime) = match path_nar_hash(ev, path, exp.as_ref(), pos)? {
+            let held = exp.and_then(|h| Some((h, held_tree(ev, path, &h, is_final)?)));
+            let found = match held {
+                Some(found) => Ok(found),
+                None => path_nar_hash(ev, path, exp.as_ref(), pos)?.map(|(h, m)| (h, Some(m))),
+            };
+            let (hash, mtime) = match found {
                 Ok(found) => found,
                 Err(hash) => {
                     let exp = exp.expect("only a narHash mismatches");
@@ -223,9 +262,11 @@ pub fn fetch_tree(ev: &mut Evaluator, args: &[Word], pos: Pos) -> EvalResult<Wor
                 }
             };
             attrs.insert("narHash".into(), AttrVal::Str(hash.to_sri()));
-            attrs
-                .entry("lastModified".into())
-                .or_insert(AttrVal::Int(mtime.max(0) as u64));
+            if let Some(mtime) = mtime {
+                attrs
+                    .entry("lastModified".into())
+                    .or_insert(AttrVal::Int(mtime.max(0) as u64));
+            }
             let path = treestore::store_path("source", &hash)
                 .map_err(|e| Error::boxed(ErrorKind::Eval, e.to_string(), pos))?;
             Tree {

@@ -11,7 +11,7 @@ pub mod flakeref;
 use std::path::{Path, PathBuf};
 use std::{fs, io, mem};
 
-use crate::builtins::fetch::{self, fetch_tree};
+use crate::builtins::fetch::{self, fetch_final_tree};
 use crate::builtins::store_hooks::locate;
 use crate::compile;
 use crate::compile::ir::ParamIr;
@@ -360,7 +360,9 @@ fn load_flake(ev: &mut Evaluator, fr: &FlakeRef, top: bool, info: &Attrs) -> Eva
     // one is there only with `fetch-tree` or `flakes` (`builtins::exposed`),
     // and `call-flake.nix` needs it either way
     let fetch_sym = ev.sym(b"fetchTree");
-    let fetch_tree = ev.arena.mk_primop("fetchTree", 1, fetch_tree, fetch_sym);
+    let fetch_tree = ev
+        .arena
+        .mk_primop("fetchTree", 1, fetch_final_tree, fetch_sym);
     ev.apply(call_flake, &[lock_str, overrides, fetch_tree], pos)
 }
 
@@ -390,7 +392,11 @@ pub fn get_flake(ev: &mut Evaluator, args: &[Word], pos: Pos) -> EvalResult<Word
     };
     if let Some((path, expected)) = path.zip(source::str_attr(&p.input, "narHash")) {
         let expected = source::parse_nar_hash(expected).map_err(|e| eval_error(e, pos))?;
-        if let Err(got) = fetch::path_nar_hash(ev, path, Some(&expected), pos)? {
+        // the store path its NAR hash names, which the store holds, is that tree
+        let held = fetch::held_tree(ev, path, &expected, false);
+        if held.is_none()
+            && let Err(got) = fetch::path_nar_hash(ev, path, Some(&expected), pos)?
+        {
             let msg = format!(
                 "NAR hash mismatch in input '{s}', expected '{}' but got '{}'",
                 expected.to_sri(),

@@ -1490,6 +1490,53 @@ fn get_flake_of_a_pinned_store_path() {
     }
 }
 
+/// A locked `path` input whose tree the store holds is read from the store,
+/// as Nix takes a final input from the store, even once the directory it was
+/// locked from is gone; and `fetchTree` of that store path, the narHash
+/// locking it, gives what `nix eval` gives.
+#[test]
+fn a_locked_path_input_the_store_holds() {
+    let Some(mut f) = F::new() else { return };
+    let (dep, app) = (f.w("dep"), f.w("app"));
+    write(
+        Path::new(&format!("{dep}/hello.txt")),
+        "hello from the store\n",
+    );
+    let mut add = f.s.nix("nix");
+    let held = stdout(&ok(add.args(["store", "add", "--name", "source", &dep])));
+    let hash = f.nar_hash(&dep);
+    write(
+        Path::new(&format!("{app}/flake.nix")),
+        &format!(
+            r#"{{ inputs.dep = {{ url = "path:{dep}"; flake = false; }};
+                 outputs = {{ self, dep }}: {{ v = builtins.readFile "${{dep}}/hello.txt"; }}; }}"#
+        ),
+    );
+    let o = f.lock(&app);
+    assert!(o.status.success(), "lock: {}", last(&stderr(&o), 3));
+    fs::remove_dir_all(&dep).unwrap();
+    f.check(
+        "a locked path input the store holds",
+        &format!("{app}#v"),
+        &[],
+    );
+
+    let e = format!(
+        r#"builtins.toJSON (builtins.removeAttrs
+             (builtins.fetchTree {{ type = "path"; path = "{held}"; narHash = "{hash}"; }}) [ "outPath" ])"#
+    );
+    let n = f.nix(&["eval", "--raw", "--expr", &e]);
+    let i = f.iets_eval(&[], &["--raw", "--no-tracing-cache", "--expr", &e]);
+    let (exp, got) = (stdout(&n), stdout(&i));
+    f.verdict(!exp.is_empty() && exp == got, || {
+        format!(
+            "fetchTree of {held}\n  nix:  {exp} {}\n  iets: {got} {}",
+            last(&stderr(&n), 3),
+            last(&stderr(&i), 3)
+        )
+    });
+}
+
 /// iets reads the root tree from the working tree, so a link must resolve
 /// where the store copy puts it.
 #[test]
