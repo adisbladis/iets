@@ -417,11 +417,19 @@ impl<'a> Compiler<'a> {
             }
             Expr::Attrs { rec, binds } => {
                 let merged = self.merge_binds(*rec, ast.binds(*binds), pos)?;
+                // `{ }` too is a value already
+                if merged.statics.is_empty() && merged.dynamics.is_empty() {
+                    return Ok(Ir::Const(self.arena.mk_attrs_sorted(&[])));
+                }
                 let a = self.lower_attrs(merged)?;
                 Ir::Attrs(a)
             }
             Expr::List(items) => {
                 let items = ast.ids(*items);
+                // `[ ]` is a value already: no thunk and no list per evaluation
+                if items.is_empty() {
+                    return Ok(Ir::Const(self.arena.mk_list(&[])));
+                }
                 let mut v = Vec::with_capacity(items.len());
                 for i in items {
                     v.push(self.expr(*i)?);

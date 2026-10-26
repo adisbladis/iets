@@ -35,7 +35,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 use std::{fs, slice};
 
-const MAGIC: &[u8; 8] = b"IETS_IR3";
+const MAGIC: &[u8; 8] = b"IETS_IR4";
 
 /// Byte tags of an entry. The values are the format: changing one changes
 /// `MAGIC`.
@@ -115,6 +115,8 @@ tags! {
         Global = 5,
         /// A `builtins` attribute.
         Builtin = 6,
+        EmptyList = 7,
+        EmptyAttrs = 8,
     }
 }
 
@@ -446,6 +448,15 @@ impl Ser {
                     };
                     self.tag(ConstTag::Float);
                     self.out.extend_from_slice(&f.to_bits().to_le_bytes());
+                    return;
+                }
+                // the compiler's `[ ]` and `{ }`
+                Some(Kind::List) if w.as_list().is_some_and(|l| l.len == 0) => {
+                    self.tag(ConstTag::EmptyList);
+                    return;
+                }
+                Some(Kind::Attrs) if w.as_attrs().is_some_and(|a| a.is_empty()) => {
+                    self.tag(ConstTag::EmptyAttrs);
                     return;
                 }
                 Some(Kind::Int) => {
@@ -1015,6 +1026,8 @@ impl<'a> De<'a, '_> {
                 }
                 self.ev.arena.mk_int(i64::from_le_bytes(raw))
             }
+            Some(ConstTag::EmptyList) => self.ev.arena.mk_list(&[]),
+            Some(ConstTag::EmptyAttrs) => self.ev.arena.mk_attrs_sorted(&[]),
             Some(ConstTag::Global) => {
                 let s = self.sym();
                 match self.ev.globals.table.get(&s) {
@@ -1619,6 +1632,7 @@ mod tests {
             "let g = a: with { x = a; }; { inherit x; y = builtins.add x 1; }; in g 7\n",
             // frames extended by a body lambda and a body `let`
             "let f = s: { b ? s.a }: c: let inherit (s) a; d = [ a b c ]; inherit c; in d; in [ (f { a = 1; } { } 3) ((f { a = 2; }) { b = 4; } 5) ]\n",
+            "let f = { a ? [ ], b ? { } }: [ a b ]; in f { }\n",
         ];
         for (n, src) in CASES.iter().enumerate() {
             let path = format!("/t/fuzz{n}.nix").into_bytes();

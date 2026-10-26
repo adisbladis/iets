@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use super::{ErrorKind, EvalConfig, Evaluator};
+use super::{ErrorKind, EvalConfig, Evaluator, Pos};
 use rstest::rstest;
 
 use crate::print;
@@ -80,6 +80,50 @@ fn intersect_attrs_matches_a_filter(#[case] l: &str, #[case] r: &str) {
 #[case::through_builtin("builtins.mapAttrs (n: v: n + v) { a = \"x\"; }", r#"{ a = "ax"; }"#)]
 fn lambda_params_read_or_ignored(#[case] src: &str, #[case] want: &str) {
     assert_eq!(eval_str(src), want);
+}
+
+/// `[ ]` and `{ }` compile to one value per site, which every evaluation
+/// and every caller shares.
+#[rstest]
+#[case::list_grows(
+    "let f = { a ? [ ] }: a ++ [ 1 ]; in [ (f { }) (f { }) ]",
+    "[ [ 1 ] [ 1 ] ]"
+)]
+#[case::attrs_grow(
+    "let f = x: { } // x; in [ (f { a = 1; }) (f { b = 2; }) ]",
+    "[ { a = 1; } { b = 2; } ]"
+)]
+#[case::equal("[ ([ ] == [ ]) ({ } == { }) (rec { } == { }) ]", "[ true true true ]")]
+#[case::types("map builtins.typeOf [ [ ] { } ]", r#"[ "list" "set" ]"#)]
+#[case::or_default("let s = { }; in (s.x or [ ]) ++ (s.y or [ 2 ])", "[ 2 ]")]
+#[case::dynamic_is_not_empty(r#"let n = "a"; in { ${n} = 1; }"#, "{ a = 1; }")]
+fn empty_literals(#[case] src: &str, #[case] want: &str) {
+    assert_eq!(eval_str(src), want);
+}
+
+#[test]
+fn every_empty_list_and_set_is_one_object() {
+    let mut ev = Evaluator::new();
+    let list = ev.mk_list(&[]);
+    let attrs = ev.empty_attrs();
+    let made = ev
+        .eval_string(
+            "[ [ ] { } (builtins.filter (x: false) [ 1 ]) (removeAttrs { a = 1; } [ \"a\" ]) ]",
+            b"/",
+        )
+        .and_then(|v| ev.force_deep(v))
+        .unwrap();
+    let items: Vec<_> = ev
+        .force_list(made, Pos::NONE, "")
+        .unwrap()
+        .cells()
+        .iter()
+        .map(|c| c.get())
+        .collect();
+    assert_eq!(list, ev.mk_list(&[]));
+    assert_eq!(attrs, ev.empty_attrs());
+    assert_eq!([items[0], items[2]], [list, list]);
+    assert_eq!([items[1], items[3]], [attrs, attrs]);
 }
 
 #[test]
