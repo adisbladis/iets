@@ -197,13 +197,34 @@ pub struct Lexer<'a> {
 
 #[inline]
 fn is_id_char(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_' || b == b'\'' || b == b'-'
+    CLASS[b as usize] & ID != 0
 }
 
 #[inline]
 fn is_path_char(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'.' || b == b'_' || b == b'-' || b == b'+'
+    CLASS[b as usize] & PATH != 0
 }
+
+const ID: u8 = 1;
+const PATH: u8 = 2;
+
+/// One load per byte where the two tests above made up to six compares.
+static CLASS: [u8; 256] = {
+    let mut t = [0u8; 256];
+    let mut b = 0;
+    while b < 256 {
+        let c = b as u8;
+        let alnum = c.is_ascii_alphanumeric();
+        if alnum || c == b'_' || c == b'\'' || c == b'-' {
+            t[b] |= ID;
+        }
+        if alnum || c == b'.' || c == b'_' || c == b'-' || c == b'+' {
+            t[b] |= PATH;
+        }
+        b += 1;
+    }
+    t
+};
 
 #[inline]
 fn is_uri_scheme_char(b: u8) -> bool {
@@ -342,20 +363,27 @@ impl<'a> Lexer<'a> {
     #[inline(always)]
     fn skip_trivia(&mut self) {
         let src = self.src;
-        while self.pos < src.len() {
-            match src[self.pos] {
-                b' ' | b'\t' | b'\r' | b'\n' => self.pos += 1,
-                b'#' => self.comment(),
-                b'/' if self.at(self.pos + 1) == b'*' => {
-                    let body = self.pos + 2;
+        // a local, so the loop does not store `pos` for every byte
+        let mut p = self.pos;
+        while p < src.len() {
+            match src[p] {
+                b' ' | b'\t' | b'\r' | b'\n' => p += 1,
+                b'#' => {
+                    self.pos = p;
+                    self.comment();
+                    p = self.pos;
+                }
+                b'/' if self.at(p + 1) == b'*' => {
+                    let body = p + 2;
                     match memchr::memmem::find(&src[body.min(src.len())..], b"*/") {
-                        Some(k) => self.pos = body + k + 2,
-                        None => return,
+                        Some(k) => p = body + k + 2,
+                        None => break,
                     }
                 }
-                _ => return,
+                _ => break,
             }
         }
+        self.pos = p;
     }
 
     /// `PATH_CHAR* ('/' PATH_CHAR+)+ '/'?` starting at `p`.
