@@ -195,6 +195,13 @@ decrement, and `get` one compare. It allocates nothing in the arena and keeps
 nothing alive that would otherwise be freed. It is `Send` and `Sync`: only an
 evaluator reads it, and an evaluator stays on its thread.
 
+What it saves grows with the reads. `bench/kept.nu` reads the `outPath` of
+30 packages of an applied nixpkgs ten times over, one read per call. With
+the root kept, the 300 reads take 0.16 s and 91 MB of peak RSS, as 30 do.
+Applying nixpkgs again in the same evaluator for each read takes 8.4 s, and
+each new fixpoint stays in the session: 6.0 GB. Applying it in a new session
+for each read takes 20.5 s and 95 MB.
+
 ## The fiber scheduler
 
 You don't ask for parallel evaluation. It happens on its own: worker threads
