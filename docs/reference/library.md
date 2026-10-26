@@ -41,7 +41,7 @@ because a word made up from bits would let a safe call read any address.
 | Derivations as Nix's JSON | `api::drvshow::show(ev, roots, recursive)`, the `nix derivation show` document; `recursive` walks the input-drv closure |
 | Derivations of another run | `api::build::drvs_in_dir(dir)` over an `EvalArgs::dump_drvs` directory; `api::build::drv_info(path, aterm)` for one |
 | Outputs to build | `api::build_targets(wanted, roots)` |
-| Upload plan | `api::build::plan(ev, roots)`, or `plan_with(roots, drvs, sources)` over a table you hold; empty tables read every drv from `/nix/store` |
+| Upload plan | `api::build::plan(ev, roots)`, or `plan_with(roots, drvs, sources)` over a table you hold; empty tables read every drv from `/nix/store`. A root is a derivation or a store path the evaluation added ("Make a copied path valid") |
 | Where the builds go | `api::build::transport(flag, &api::build::config())` |
 | Build | `api::build::Dispatch::open(&transport, &options, plan, prov, style)`, then `submit`, `upload_only`, `missing` or `realise`; `overrides(map)` for `--source STOREPATH=LOCAL` |
 | One output path per root | `Dispatch::realise(roots, &name)` then `Built::paths(roots)`; `api::build::Root { drv, output }` |
@@ -234,3 +234,29 @@ The header has nothing for the string context except
 keeps: `Opaque`, `DrvDeep`, `Built` and `Impure`. `Impure` is the marker
 that a path coercion or the metadata of a source tree leaves, and
 `builtins.getContext` does not show it.
+
+## Make a copied path valid
+
+A value can name a store path that the evaluation made but did not write:
+a path in a string (`"${./src}"`), `builtins.path`, `builtins.filterSource`
+or `builtins.toFile`. iets keeps where the bytes are, and the store does
+not have the path until you upload it. Give it to `api::build::plan` as a
+root, as you give a derivation:
+
+```rust
+let path = StorePath::parse(text)?;     // "/nix/store/…-src", from the value
+let plan = api::build::plan(ev, &[path.clone()])?;
+let mut d = api::build::Dispatch::open(&transport, &options, plan, prov, style)?;
+d.upload_only(&[path])?;                // the path is valid in the store now
+```
+
+- The plan has the path and the paths that a `toFile` text names, each
+  after the paths it names, so the store can register them in order.
+  `Plan::sources` lists them, so you can hold a temporary root on each
+  before the upload.
+- A tree that the evaluation fetched into its own input store is a root
+  too, and one plan can have derivations and paths as roots.
+- A root that is neither a derivation nor a path this evaluation added
+  fails with `Error::UnknownRoot`, which names the path. A path of another
+  evaluation, or one the store already held (a fetched tree that iets found
+  in `/nix/store`), gives the plan nothing to upload.
