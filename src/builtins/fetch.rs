@@ -151,7 +151,41 @@ pub(crate) fn path_nar_hash(ev: &mut Evaluator, path: &str, pos: Pos) -> EvalRes
     })
 }
 
+/// Where the store holds the store path `source` that `hash` names, the
+/// `lastModified` a `path` input that `hash` locks reads with, unhashed:
+/// path.cc reads that store path in place when it is `path`, with 0, and
+/// fetchers.cc:Input::fetchToStore takes a final input from the store with
+/// its attrs as given, so with none of its own. `None` otherwise, and `path`
+/// is hashed.
+pub(crate) fn held_tree(
+    ev: &mut Evaluator,
+    path: &str,
+    hash: &Hash,
+    is_final: bool,
+) -> Option<Option<i64>> {
+    let sp = treestore::store_path("source", hash).ok()?;
+    let full = sp.to_full_string();
+    let is_store_path = full == path;
+    if !(is_store_path || is_final)
+        || !source::valid_in_store(ev, &sp, IngestionMethod::Recursive, hash)
+    {
+        return None;
+    }
+    ev.known.add_on_disk(sp);
+    Some(is_store_path.then_some(0))
+}
+
 pub fn fetch_tree(ev: &mut Evaluator, args: &[Word], pos: Pos) -> EvalResult<Word> {
+    fetch(ev, args, pos, false)
+}
+
+/// fetchTree.cc:prim_fetchFinalTree, what `call-flake.nix` fetches a lock
+/// file's inputs with: a lock file entry is final.
+pub fn fetch_final_tree(ev: &mut Evaluator, args: &[Word], pos: Pos) -> EvalResult<Word> {
+    fetch(ev, args, pos, true)
+}
+
+fn fetch(ev: &mut Evaluator, args: &[Word], pos: Pos, is_final: bool) -> EvalResult<Word> {
     purity::unhashed_fetch(ev, "fetchTree", args[0], pos)?;
     let mut attrs = collect_attrs(ev, args[0], pos)?;
     if ev.pure() {
@@ -175,33 +209,43 @@ pub fn fetch_tree(ev: &mut Evaluator, args: &[Word], pos: Pos) -> EvalResult<Wor
                     to_url(&attrs)
                 );
             }
-            let (hash, mtime) = path_nar_hash(ev, path, pos)?;
-            if let Some(expected) = str_attr(&attrs, "narHash") {
-                let exp = parse_nar_hash(expected)
-                    .map_err(|e| Error::boxed(ErrorKind::Eval, e.to_string(), pos))?;
-                if exp != hash {
-                    let msg = format!(
-                        "NAR hash mismatch in input '{}', expected '{}' but got '{}'",
-                        to_url(&attrs),
-                        exp.to_sri(),
-                        hash.to_sri()
-                    );
-                    let sym = ev.sym(b"narHash");
-                    let at = ev
-                        .force(args[0])?
-                        .as_attrs()
-                        .and_then(|a| a.get(sym))
-                        .map(|a| a.pos);
-                    let at = at.map(|p| {
-                        provenance::describe_pos(ev, p).unwrap_or_else(|| ev.describe_pos(p))
-                    });
-                    return Err(Error::hash_mismatch(msg, &hash, at, pos));
+            let expected = str_attr(&attrs, "narHash")
+                .map(parse_nar_hash)
+                .transpose()
+                .map_err(|e| Error::boxed(ErrorKind::Eval, e.to_string(), pos))?;
+            let held = expected.and_then(|h| Some((h, held_tree(ev, path, &h, is_final)?)));
+            let (hash, mtime) = match held {
+                Some((hash, mtime)) => (hash, mtime),
+                None => {
+                    let (hash, mtime) = path_nar_hash(ev, path, pos)?;
+                    (hash, Some(mtime))
                 }
+            };
+            if let Some(exp) = expected
+                && exp != hash
+            {
+                let msg = format!(
+                    "NAR hash mismatch in input '{}', expected '{}' but got '{}'",
+                    to_url(&attrs),
+                    exp.to_sri(),
+                    hash.to_sri()
+                );
+                let sym = ev.sym(b"narHash");
+                let at = ev
+                    .force(args[0])?
+                    .as_attrs()
+                    .and_then(|a| a.get(sym))
+                    .map(|a| a.pos);
+                let at = at
+                    .map(|p| provenance::describe_pos(ev, p).unwrap_or_else(|| ev.describe_pos(p)));
+                return Err(Error::hash_mismatch(msg, &hash, at, pos));
             }
             attrs.insert("narHash".into(), AttrVal::Str(hash.to_sri()));
-            attrs
-                .entry("lastModified".into())
-                .or_insert(AttrVal::Int(mtime.max(0) as u64));
+            if let Some(mtime) = mtime {
+                attrs
+                    .entry("lastModified".into())
+                    .or_insert(AttrVal::Int(mtime.max(0) as u64));
+            }
             let path = treestore::store_path("source", &hash)
                 .map_err(|e| Error::boxed(ErrorKind::Eval, e.to_string(), pos))?;
             Tree {
