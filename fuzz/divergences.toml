@@ -171,6 +171,13 @@ input = "\"outputHashMode\" = \"text\""
 nix = "dynamic-derivations"
 
 [[drv-eval]]
+id = "drv-eval-system-features-without-feature"
+doc = "docs/reference/divergences.md#experimental-feature-builtins"
+kind = "nix-only"
+input = "\"requiredSystemFeatures\""
+iets = "expected a "
+
+[[drv-eval]]
 id = "drv-eval-blake3-without-feature"
 doc = "docs/reference/divergences.md#experimental-feature-builtins"
 kind = "iets-only"
