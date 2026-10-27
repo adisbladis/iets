@@ -8,12 +8,14 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, Write};
+
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 use std::{mem, result, thread};
+use zstd::stream::raw::{InBuffer, Operation, OutBuffer};
 
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
@@ -634,26 +636,42 @@ fn upload_closure(
 /// A `FetchNars` stream: one zstd stream across every path, flushed at each
 /// frame, so a frame's decompressed bytes belong to `paths[path_index]`.
 struct NarDecoder {
-    dec: zstd::stream::write::Decoder<'static, Vec<u8>>,
+    dec: zstd::stream::raw::Decoder<'static>,
+    buf: Vec<u8>,
 }
 
 impl NarDecoder {
     fn new() -> io::Result<NarDecoder> {
         Ok(NarDecoder {
-            dec: zstd::stream::write::Decoder::new(Vec::new())?,
+            dec: zstd::stream::raw::Decoder::new()?,
+            buf: vec![0; 1 << 20],
         })
     }
 
-    /// The decompressed bytes of one frame.
-    fn feed(&mut self, data: &[u8]) -> io::Result<Vec<u8>> {
-        self.dec.write_all(data)?;
-        self.dec.flush()?;
-        Ok(mem::take(self.dec.get_mut()))
+    /// Hands the decompressed bytes of one frame to `out`, a buffer at a
+    /// time, so a frame that expands a lot is never held whole.
+    fn feed(
+        &mut self,
+        data: &[u8],
+        out: &mut dyn FnMut(&[u8]) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let mut input = InBuffer::around(data);
+        loop {
+            let mut o = OutBuffer::around(&mut self.buf[..]);
+            self.dec.run(&mut input, &mut o)?;
+            let n = o.pos();
+            if n > 0 {
+                out(&self.buf[..n])?;
+            }
+            if input.pos() == data.len() && n < self.buf.len() {
+                return Ok(());
+            }
+        }
     }
 }
 
-/// What `fetch_nars` hands each frame to: the path index, the frame's
-/// decompressed bytes, and whether it is that path's last frame.
+/// What `fetch_nars` hands the frames to, a piece at a time: the path index,
+/// decompressed bytes, and whether the path's last frame ended.
 type OnFrame<'a> = &'a mut dyn FnMut(usize, &[u8], bool) -> io::Result<()>;
 
 /// `FetchNars(paths)`, frame by frame.
@@ -680,12 +698,9 @@ fn fetch_nars(c: &Client, paths: &[StorePath], on_frame: OnFrame<'_>) -> Result<
                 paths.len()
             )));
         }
-        let bytes = if frame.data.is_empty() {
-            Vec::new()
-        } else {
-            dec.feed(&frame.data).map_err(|e| Error::io("zstd", e))?
-        };
-        on_frame(i, &bytes, frame.eof).map_err(|e| Error::io("restoring a NAR", e))?;
+        dec.feed(&frame.data, &mut |b| on_frame(i, b, false))
+            .map_err(|e| Error::io("restoring a NAR", e))?;
+        on_frame(i, &[], frame.eof).map_err(|e| Error::io("restoring a NAR", e))?;
     }
     Ok(())
 }

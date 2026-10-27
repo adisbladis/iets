@@ -376,6 +376,12 @@ pub fn put(
     Ok(stored)
 }
 
+/// A new object for the pack: compressed already, or read again as it goes in.
+enum Object {
+    Ready(pack::Prepared),
+    Stream,
+}
+
 /// Reads, hashes and, unless some pack already holds it, compresses every
 /// distinct file of `tree` on several threads, a batch at a time so that one
 /// batch bounds the memory, and appends the new ones to `writer` in the tree's
@@ -405,10 +411,15 @@ fn objects(
                     s.spawn(move || {
                         part.iter()
                             .map(|at| {
+                                if at.size() >= pack::STREAM {
+                                    let id = pack::id_of_reader(&mut tree.blob(at)?)?;
+                                    let new = !packs.contains(&id);
+                                    return Ok((*at, id, new.then_some(Object::Stream)));
+                                }
                                 let bytes = tree.read(at)?;
                                 let id = pack::id_of(&bytes);
                                 let new = !packs.contains(&id);
-                                Ok((*at, id, new.then(|| pack::prepare(bytes))))
+                                Ok((*at, id, new.then(|| Object::Ready(pack::prepare(bytes)))))
                             })
                             .collect()
                     })
@@ -423,7 +434,10 @@ fn objects(
             for (at, id, prepared) in part? {
                 ids.insert(at, id);
                 match prepared {
-                    Some(p) => writer.add_prepared(id, p)?,
+                    Some(Object::Ready(p)) => writer.add_prepared(id, p)?,
+                    Some(Object::Stream) => {
+                        writer.add_stream(id, &mut tree.blob(&at)?, at.size())?
+                    }
                     None => {
                         elsewhere.entry(id).or_insert(at);
                     }

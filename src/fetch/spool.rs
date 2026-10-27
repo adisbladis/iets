@@ -184,55 +184,76 @@ fn find(d: &Dir, name: &[u8]) -> result::Result<usize, usize> {
     d.binary_search_by(|(k, _)| k.as_slice().cmp(name))
 }
 
+/// A directory while the archive is indexed: a member may come in any
+/// order, so its entries are a map until [`Draft::finish`].
+enum Draft {
+    Dir(BTreeMap<Vec<u8>, Draft>),
+    Leaf(Node),
+}
+
+type DraftDir = BTreeMap<Vec<u8>, Draft>;
+
+impl Draft {
+    fn finish(d: DraftDir) -> Dir {
+        d.into_iter()
+            .map(|(name, n)| {
+                let n = match n {
+                    Draft::Dir(d) => Node::Dir(Draft::finish(d)),
+                    Draft::Leaf(n) => n,
+                };
+                (name, n)
+            })
+            .collect()
+    }
+}
+
 /// The last copy of a member wins (git-utils.cc:1213), except that a directory
 /// listed again keeps what is already under it. `replace` is false for a hard
 /// link, which carries no `id` and so never takes a name a member claimed.
-fn put(d: &mut Dir, name: &[u8], node: Node, replace: bool) {
-    match find(d, name) {
-        Ok(i) => {
-            if replace && !(matches!(node, Node::Dir(_)) && matches!(d[i].1, Node::Dir(_))) {
-                d[i].1 = node;
+fn put(d: &mut DraftDir, name: &[u8], node: Draft, replace: bool) {
+    match d.get_mut(name) {
+        Some(old) => {
+            if replace && !(matches!(node, Draft::Dir(_)) && matches!(old, Draft::Dir(_))) {
+                *old = node;
             }
         }
-        Err(i) => d.insert(i, (name.to_vec(), node)),
+        None => {
+            d.insert(name.to_vec(), node);
+        }
     }
 }
 
 /// Puts `node` at `parts`, with the missing parents created. A parent that is
 /// not a directory is replaced, a symlink included, as `make_parents` replaces
 /// it (git-utils.cc:addNode emplaces a directory at every parent name).
-fn insert(at: &mut Dir, parts: &[Vec<u8>], node: Node, replace: bool) {
+fn insert(at: &mut DraftDir, parts: &[Vec<u8>], node: Draft, replace: bool) {
     let (name, rest) = parts.split_first().expect("a non-empty member path");
     if rest.is_empty() {
         put(at, name, node, replace);
         return;
     }
-    let i = match find(at, name) {
-        Ok(i) => i,
-        Err(i) => {
-            at.insert(i, (name.clone(), Node::Dir(Dir::new())));
-            i
-        }
-    };
-    if !matches!(at[i].1, Node::Dir(_)) {
-        at[i].1 = Node::Dir(Dir::new());
+    let child = at
+        .entry(name.clone())
+        .or_insert_with(|| Draft::Dir(DraftDir::new()));
+    if !matches!(child, Draft::Dir(_)) {
+        *child = Draft::Dir(DraftDir::new());
     }
-    let Node::Dir(d) = &mut at[i].1 else {
+    let Draft::Dir(d) = child else {
         unreachable!("a directory")
     };
     insert(d, rest, node, replace)
 }
 
-fn lookup<'a>(root: &'a Dir, parts: &[Vec<u8>]) -> Option<&'a Node> {
+fn lookup<'a>(root: &'a DraftDir, parts: &[Vec<u8>]) -> Option<&'a Draft> {
     let (last, parents) = parts.split_last()?;
     let mut at = root;
     for p in parents {
-        match find(at, p).ok().map(|i| &at[i].1) {
-            Some(Node::Dir(d)) => at = d,
+        match at.get(p) {
+            Some(Draft::Dir(d)) => at = d,
             _ => return None,
         }
     }
-    find(at, last).ok().map(|i| &at[i].1)
+    at.get(last)
 }
 
 impl Tree {
@@ -240,7 +261,7 @@ impl Tree {
     /// kept for `dump`. `max_size` is `fetch-max-size`: the spool and everything
     /// a sparse member expands to must fit in it together.
     pub fn index(spool: File, max_size: u64) -> Result<Tree> {
-        let mut root = Dir::new();
+        let mut root = DraftDir::new();
         let mut links: BTreeMap<Parts, Parts> = Default::default();
         let mut sparse: Option<File> = None;
         let mut sparse_at = 0u64;
@@ -272,6 +293,12 @@ impl Tree {
                 if parts.is_empty() {
                     continue;
                 }
+                if parts.len() > NAR_MAX_DEPTH {
+                    return Err(bad(format!(
+                        "tarball member '{}' is nested deeper than {NAR_MAX_DEPTH} directories",
+                        name.display()
+                    )));
+                }
                 if kind.is_character_special() || kind.is_block_special() || kind.is_fifo() {
                     return Err(bad(format!(
                         "file '{}' in tarball has unsupported file type {kind:?}",
@@ -279,10 +306,10 @@ impl Tree {
                     )));
                 }
                 if kind.is_dir() {
-                    insert(&mut root, &parts, Node::Dir(Dir::new()), true);
+                    insert(&mut root, &parts, Draft::Dir(DraftDir::new()), true);
                 } else if kind.is_symlink() {
                     let target = link_target(&mut entry, &parts, "symlink")?;
-                    insert(&mut root, &parts, Node::Symlink(target), true);
+                    insert(&mut root, &parts, Draft::Leaf(Node::Symlink(target)), true);
                 } else if kind.is_hard_link() {
                     let target = link_target(&mut entry, &parts, "link")?;
                     let target = unpack::member_path(Path::new(OsStr::from_bytes(&target)));
@@ -331,7 +358,12 @@ impl Tree {
                             at
                         }
                     };
-                    insert(&mut root, &parts, Node::File { at, exec }, true);
+                    insert(
+                        &mut root,
+                        &parts,
+                        Draft::Leaf(Node::File { at, exec }),
+                        true,
+                    );
                 }
             }
         }
@@ -340,13 +372,14 @@ impl Tree {
         // link may name a link whose own name sorts before it.
         for (parts, target) in links {
             let copy = match lookup(&root, &target) {
-                Some(node) => node.copy().ok_or_else(|| {
-                    bad(format!(
+                Some(Draft::Leaf(node)) => node.copy().expect("a leaf"),
+                Some(Draft::Dir(_)) => {
+                    return Err(bad(format!(
                         "tarball member '{}' is a hard link to the directory '{}'",
                         show(&parts),
                         show(&target)
-                    ))
-                })?,
+                    )));
+                }
                 None => {
                     return Err(bad(format!(
                         "tarball member '{}' is a hard link to '{}', which the archive does not hold",
@@ -355,11 +388,26 @@ impl Tree {
                     )));
                 }
             };
-            insert(&mut root, &parts, copy, false);
+            if lookup(&root, &parts).is_some() {
+                continue;
+            }
+            // each alias is read and hashed again, or holds its own copy of
+            // a symlink target, so it costs that size
+            let cost = match &copy {
+                Node::File { at, .. } => at.size(),
+                Node::Symlink(t) => t.len() as u64,
+                Node::Dir(_) => 0,
+            };
+            room = room.checked_sub(cost).ok_or_else(|| {
+                bad(format!(
+                    "the tarball expands to over the fetch-max-size of {max_size} bytes"
+                ))
+            })?;
+            insert(&mut root, &parts, Draft::Leaf(copy), false);
         }
         Ok(Tree {
             src: Source::Spool { spool, sparse },
-            root: Node::Dir(dereference(root)),
+            root: Node::Dir(dereference(Draft::finish(root))),
         })
     }
 
@@ -485,7 +533,7 @@ impl Tree {
     /// A member's bytes as a reader, for the NAR writer to pull through its
     /// own buffer. A spool member is read a chunk at a time; an object is one
     /// payload, so it is read whole.
-    fn blob(&self, at: &Blob) -> io::Result<Box<dyn Read + '_>> {
+    pub fn blob(&self, at: &Blob) -> io::Result<Box<dyn Read + '_>> {
         Ok(match *at {
             Blob::Spool {
                 offset,
@@ -1503,6 +1551,72 @@ pub(crate) mod tests {
         spool.write_all(&bomb).unwrap();
         let e = Tree::index(spool, 1 << 20).unwrap_err().to_string();
         assert!(e.contains("fetch-max-size"), "{e}");
+    }
+
+    /// Each hard link is read and hashed again, so it costs its size too.
+    #[test]
+    fn hard_links_count_against_the_budget() {
+        let big = vec![b'x'; 64 << 10];
+        let mut entries = vec![("f", REG, 0o644, &big[..])];
+        let names: Vec<String> = (0..32).map(|i| format!("l{i}")).collect();
+        entries.extend(names.iter().map(|n| (n.as_str(), HARD, 0o644, &b"f"[..])));
+        let tar = http::decompress(tar_gz(&entries)).unwrap();
+        let mut spool = scratch("links").unwrap();
+        spool.write_all(&tar).unwrap();
+        let e = Tree::index(spool, 1 << 20).unwrap_err().to_string();
+        assert!(e.contains("fetch-max-size"), "{e}");
+    }
+
+    /// A hard link to a symlink copies its target.
+    #[test]
+    fn hard_links_to_a_symlink_count_against_the_budget() {
+        let mut b = tar::Builder::new(Vec::new());
+        let mut h = tar::Header::new_gnu();
+        h.set_entry_type(SYM);
+        h.set_size(0);
+        h.set_mode(0o777);
+        b.append_link(&mut h, "s", "x".repeat(60_000)).unwrap();
+        for i in 0..32 {
+            let mut h = tar::Header::new_gnu();
+            h.set_entry_type(HARD);
+            h.set_size(0);
+            h.set_mode(0o644);
+            b.append_link(&mut h, format!("l{i}"), "s").unwrap();
+        }
+        let mut spool = scratch("symlinks").unwrap();
+        spool.write_all(&b.into_inner().unwrap()).unwrap();
+        let e = Tree::index(spool, 1 << 20).unwrap_err().to_string();
+        assert!(e.contains("fetch-max-size"), "{e}");
+    }
+
+    /// A link whose name a member already holds is dropped, so it costs
+    /// nothing.
+    #[test]
+    fn a_dropped_hard_link_costs_nothing() {
+        let big = vec![b'x'; 300 << 10];
+        let tar = http::decompress(tar_gz(&[
+            ("f", REG, 0o644, &big[..]),
+            ("a", HARD, 0o644, b"f"),
+            ("b", HARD, 0o644, b"f"),
+            ("c", HARD, 0o644, b"f"),
+            ("a", REG, 0o644, b"a"),
+            ("b", REG, 0o644, b"b"),
+            ("c", REG, 0o644, b"c"),
+        ]))
+        .unwrap();
+        let mut spool = scratch("dropped").unwrap();
+        spool.write_all(&tar).unwrap();
+        Tree::index(spool, 1 << 20).unwrap();
+    }
+
+    #[test]
+    fn a_member_nested_too_deep_is_refused() {
+        let deep = vec!["d"; NAR_MAX_DEPTH + 1].join("/");
+        let tar = pax_tar(&[("path", deep)], "x", b"x");
+        let mut spool = scratch("deep").unwrap();
+        spool.write_all(&tar).unwrap();
+        let e = Tree::index(spool, u64::MAX).unwrap_err().to_string();
+        assert!(e.contains("nested deeper"), "{e}");
     }
 
     /// The fixture whose `narHash` a lock file records, hashed out of the spool.
