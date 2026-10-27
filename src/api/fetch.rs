@@ -205,4 +205,14 @@ mod tests {
             "{e}"
         );
     }
+
+    #[test]
+    fn an_offline_prefetch_is_an_offline_error() {
+        let env = crate::env::Env::isolated().with([("IETS_OFFLINE", "1")]);
+        let session = crate::session::Session::with_env(env);
+        let _entered = session.enter();
+        let e = url_hash("file:///nonexistent/f", false, HashAlgo::Sha256).unwrap_err();
+        assert!(matches!(e, Error::Offline(_)), "{e:?}");
+        assert_eq!(e.code(), "offline");
+    }
 }
