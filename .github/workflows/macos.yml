@@ -1,0 +1,21 @@
+name: macos
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  merge_group:
+
+jobs:
+  test:
+    name: macos-latest
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+      - run: cargo nextest run --locked --no-fail-fast
+      # nextest does not run doctests
+      - if: ${{ !cancelled() }}
+        run: cargo test --locked --doc
