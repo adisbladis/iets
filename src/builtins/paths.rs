@@ -31,7 +31,7 @@ use crate::store::path::{
     HASH_PART_LEN, IngestionMethod, StorePath, StorePathError, make_fixed_output_path,
     make_text_path, strip_store_dir,
 };
-use crate::store::source::{SourceOrigin, Src, SrcPath};
+use crate::store::source::{SourceKind, SourceOrigin, Src, SrcPath};
 use crate::trace::{self, Kind};
 use crate::{config, log, treestore};
 
@@ -770,6 +770,18 @@ fn add_path_inner(
             let at = at.filtered(accepted.map(Arc::new).or(parent));
             ev.known
                 .add(sp.clone(), SourceOrigin::tree(at, hash, nar_size));
+        }
+    } else {
+        // a plain file, which the plan hashes as a NAR when it uploads it
+        let o = SourceOrigin {
+            at,
+            kind: SourceKind::Flat { hash },
+            nar: None,
+        };
+        if on_disk {
+            ev.known.add_copy(sp.clone(), o);
+        } else {
+            ev.known.add(sp.clone(), o);
         }
     }
     if let Some(exp) = expected_sp

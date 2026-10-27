@@ -221,7 +221,8 @@ pub fn missing_top_down<N: Copy + Eq + Hashable>(
 
 impl Plan {
     /// The plan's paths in the closure of `roots` that the store lacks
-    /// (`missing_top_down`). A valid drv answers for all it references.
+    /// (`missing_top_down`). A valid drv or text answers for all it
+    /// references.
     pub fn query_missing(
         &self,
         roots: &[StorePath],
@@ -233,20 +234,24 @@ impl Plan {
             .iter()
             .chain(self.drvs.iter().map(Object::store_path))
             .collect();
+        let texts = (self.origins.iter()).filter_map(|(p, o)| Some((p, o.text_refs()?)));
         let refs: HashMap<&StorePath, Vec<&StorePath>> = self
             .drvs
             .iter()
             .filter_map(|o| match o {
                 Object::Drv {
                     path, references, ..
-                } => Some((
-                    path,
-                    references
-                        .iter()
+                } => Some((path, references)),
+                Object::Source { .. } => None,
+            })
+            .chain(texts)
+            .map(|(p, refs)| {
+                (
+                    p,
+                    refs.iter()
                         .filter_map(|r| planned.get(r).copied())
                         .collect(),
-                )),
-                Object::Source { .. } => None,
+                )
             })
             .collect();
         let roots = roots
@@ -377,8 +382,9 @@ pub fn load_drv(
 /// The drvs `roots` need, each after every drv it references, and the
 /// sources they name, each after the sources its `toFile` text references
 /// (`text_refs`): the daemon registers a path only once its references are
-/// valid, and a text can point at a copied path no derivation lists. The walk
-/// stops at `known`. The count is the drvs read from `/nix/store`.
+/// valid, and a text can point at a copied path no derivation lists. A root
+/// that is no derivation is a source. The walk stops at `known`. The count
+/// is the drvs read from `/nix/store`.
 pub fn walk(
     roots: &[StorePath],
     known: &HashSet<StorePath>,
@@ -414,6 +420,11 @@ pub fn walk(
             drvs.push((p, aterm, refs));
             continue;
         }
+        // only a root: a drv's other references go to `source` below
+        if !p.is_derivation() {
+            source(p, known, text_refs, &mut seen, &mut srcs);
+            continue;
+        }
         if known.contains(&p) || !seen.insert(p.clone()) {
             continue;
         }
@@ -436,8 +447,13 @@ pub fn walk(
 /// Computes the closure of `roots`: input drvs recursively and every input source, without
 /// reading or hashing a source. Every drv comes from `inputs`; what is not there is read from
 /// `/nix/store` and counted in the plan. Fixed-output drvs are ordinary drvs here; the builder
-/// fetches them.
+/// fetches them. A root that is no drv must be a source in `inputs`, which the plan uploads
+/// with the sources its text references.
 pub fn plan(roots: &[StorePath], inputs: Inputs<'_>) -> Result<Plan> {
+    let unknown = |p: &&StorePath| !p.is_derivation() && !inputs.sources.contains_key(*p);
+    if let Some(p) = roots.iter().find(unknown) {
+        return Err(Error::UnknownRoot(p.clone()));
+    }
     let (drvs, sources, store_drvs) = walk(
         roots,
         &HashSet::new(),
@@ -509,7 +525,7 @@ fn hash_sources(sources: &[&StorePath], infos: &[SourceOrigin]) -> Result<Vec<Ob
 mod tests {
     use super::*;
     use crate::store::nar::tests::{Tree, tree};
-    use crate::store::nar::{nar_hash, nar_size};
+    use crate::store::nar::{nar_hash, nar_hash_of_string, nar_size};
     use rstest::rstest;
 
     #[rstest]
@@ -604,6 +620,74 @@ mod tests {
         let (seen, missing) = calls(&chain(), &["a.drv", "src"], Some(&HashSet::new()));
         assert_eq!(seen, [["a.drv", "src"]]);
         assert_eq!(missing, ["root.drv"]);
+    }
+
+    /// A tree, a text that names it, and a drv that names the text.
+    fn copies() -> (
+        FxHashMap<StorePath, DrvInfo>,
+        HashMap<StorePath, SourceOrigin>,
+    ) {
+        let tree = SourceOrigin::tree(SrcPath::fs("/t", None), nar_hash_of_string(b""), 0);
+        let text = SourceOrigin::text(b"x".to_vec(), [sp("tree")].into());
+        let drv = DrvInfo {
+            outputs: ["out".to_string()].into(),
+            references: [sp("text")].into(),
+            aterm: Some(Arc::new(Vec::new())),
+            pos: None,
+            attr: None,
+        };
+        (
+            [(sp("d.drv"), drv)].into_iter().collect(),
+            [(sp("tree"), tree), (sp("text"), text)].into(),
+        )
+    }
+
+    fn names(paths: &[StorePath]) -> Vec<&str> {
+        paths.iter().map(StorePath::name).collect()
+    }
+
+    #[test]
+    fn a_copied_path_is_a_root() {
+        let (drvs, sources) = copies();
+        let inputs = Inputs {
+            drvs: &drvs,
+            sources: &sources,
+        };
+        let p = plan(&[sp("text")], inputs).unwrap();
+        assert_eq!(names(&p.sources), ["tree", "text"]);
+        assert!(p.drvs.is_empty());
+        assert_eq!(p.origins.len(), 2);
+
+        let p = plan(&[sp("d.drv"), sp("tree")], inputs).unwrap();
+        assert_eq!(names(&p.sources), ["tree", "text"]);
+        assert_eq!(p.drvs.len(), 1);
+
+        match plan(&[sp("d.drv"), sp("other")], inputs) {
+            Err(Error::UnknownRoot(p)) => assert_eq!(p, sp("other")),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// A text is registered only once what it names is valid, so a missing
+    /// one asks about that too, whether it is a root or a drv's input.
+    #[test]
+    fn a_missing_text_asks_about_what_it_names() {
+        let (drvs, sources) = copies();
+        let inputs = Inputs {
+            drvs: &drvs,
+            sources: &sources,
+        };
+        for root in ["text", "d.drv"] {
+            let p = plan(&[sp(root)], inputs).unwrap();
+            let missing = p.query_missing(&[sp(root)], None, &mut |_| Ok(HashSet::new()));
+            let mut missing: Vec<&str> = missing.unwrap().iter().map(|p| p.name()).collect();
+            missing.sort();
+            let want: &[&str] = match root {
+                "text" => &["text", "tree"],
+                _ => &["d.drv", "text", "tree"],
+            };
+            assert_eq!(missing, want, "{root}");
+        }
     }
 
     #[test]

@@ -180,8 +180,8 @@ fn attr(k: String, v: &str) -> Option<(String, AttrVal)> {
     }
 }
 
-/// fetchers.cc:Input::getRev, as 40 hex digits.
-fn rev(a: &Attrs) -> R<Option<String>> {
+/// fetchers.cc:Input::getRev, in hex.
+pub(crate) fn rev(a: &Attrs) -> R<Option<String>> {
     let parse = |s| Hash::parse_any(s, None).or_else(|_| Hash::parse_any(s, Some(HashAlgo::Sha1)));
     Ok(str_attr(a, "rev")
         .map(parse)
