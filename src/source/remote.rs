@@ -19,8 +19,7 @@ use super::scm::{Commit, Entry};
 use super::{AttrVal, Attrs, Tree, parse_nar_hash, str_attr, to_url};
 use crate::builtins::{fetch_git, store_hooks};
 use crate::eval::{Error, ErrorKind, EvalResult, Evaluator, Pos, bail};
-use crate::fetch::http::{self, Limits};
-use crate::fetch::spool;
+use crate::fetch::{self, Limits, spool};
 use crate::flake::flakeref;
 use crate::log;
 use crate::remote::event;
@@ -447,7 +446,7 @@ pub fn fetch_file(
         adopt_file(ev, &sp, &entry, expected);
         return Ok(sp);
     }
-    let shown = http::shown(url);
+    let shown = fetch::shown(url);
     let _fetching = treestore::fetch_lock(sp.base_name(), || {
         log::line(&format!(
             "iets: waiting for another process to download '{shown}'"
@@ -492,19 +491,19 @@ pub fn fetch_file(
 /// through the accessor a `readFile` uses, which follows no link out of what
 /// the evaluation may read (docs/explanation/pure-eval-and-local-sources.md).
 /// `None` for any other URL and in impure evaluation, where
-/// [`http::get`] reads the file as libcurl does.
+/// [`fetch::get`] reads the file as libcurl does.
 fn local_file(ev: &Evaluator, url: &str, pos: Pos) -> EvalResult<Option<SrcPath>> {
     if !ev.pure() {
         return Ok(None);
     }
-    let Some(path) = http::local_path(url) else {
+    let Some(path) = fetch::local_path(url) else {
         return Ok(None);
     };
     let (_, at) = store_hooks::local_source(ev, path.as_bytes(), pos)?;
     Ok(Some(at))
 }
 
-/// [`http::get`], or the read of the [`local_file`] the URL names. An error
+/// [`fetch::get`], or the read of the [`local_file`] the URL names. An error
 /// keeps its kind, so a download `IETS_OFFLINE` refused is `Offline`.
 fn download(
     ev: &Evaluator,
@@ -517,14 +516,14 @@ fn download(
 ) -> result::Result<u64, (ErrorKind, String)> {
     let failed = |e: crate::error::Error| (e.eval_kind(ErrorKind::Eval), e.to_string());
     let Some(at) = local else {
-        return http::get(url, headers, limits, decompress, sink).map_err(failed);
+        return fetch::get(url, headers, limits, decompress, sink).map_err(failed);
     };
     let bytes = at.read(ev, false).map_err(|(_, e)| {
-        let path = http::local_path(url).unwrap_or_default();
+        let path = fetch::local_path(url).unwrap_or_default();
         let msg = format!("cannot read '{path}': {}", crate::error::io_text(&e));
         (ErrorKind::Eval, msg)
     })?;
-    http::put(url, bytes, limits, decompress, sink).map_err(failed)
+    fetch::put(url, bytes, limits, decompress, sink).map_err(failed)
 }
 
 /// In pure evaluation, the source of a locked input that is on this machine
@@ -716,7 +715,7 @@ fn fetch_tarball(
             let msg = format!(
                 "iets: NAR hash mismatch in input '{name}' ({}): expected '{}' \
                  but the tree iets fetched hashes to '{}'",
-                crate::fetch::http::shown(&url),
+                fetch::shown(&url),
                 expected.to_sri(),
                 got.to_sri()
             );
