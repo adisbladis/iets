@@ -301,8 +301,10 @@ mod tests {
         fs::OpenOptions::new().write(true).open(p).unwrap()
     }
 
+    /// A rewrite of the same size in the same timestamp tick leaves the stat
+    /// as it was, so a file that fresh is hashed again.
     #[test]
-    fn file_touch_refreshes_edit_misses() {
+    fn a_file_written_just_now_is_rehashed() {
         let d = tempdir().unwrap();
         let f = d.path().join("a.nix");
         fs::write(&f, b"1").unwrap();
@@ -310,10 +312,31 @@ mod tests {
         let p = f.as_os_str().as_bytes().to_vec();
         let mut obs = vec![super::super::file_obs(&p, &m, sha256(b"1"))];
         let r = validate(&mut obs, 2).unwrap();
+        assert_eq!(r.rehashed, 1);
+
+        let ahead = SystemTime::now() + Duration::from_secs(60);
+        open_rw(&f).set_modified(ahead).unwrap();
+        let m = fs::metadata(&f).unwrap();
+        let mut obs = vec![super::super::file_obs(&p, &m, sha256(b"1"))];
+        let r = validate(&mut obs, 2).unwrap();
+        assert_eq!(r.rehashed, 1, "a future mtime is not trusted either");
+    }
+
+    #[test]
+    fn file_touch_refreshes_edit_misses() {
+        let d = tempdir().unwrap();
+        let f = d.path().join("a.nix");
+        fs::write(&f, b"1").unwrap();
+        let earlier = SystemTime::now() - Duration::from_secs(60);
+        open_rw(&f).set_modified(earlier).unwrap();
+        let m = fs::metadata(&f).unwrap();
+        let p = f.as_os_str().as_bytes().to_vec();
+        let mut obs = vec![super::super::file_obs(&p, &m, sha256(b"1"))];
+        let r = validate(&mut obs, 2).unwrap();
         assert_eq!((r.rehashed, r.refreshed), (0, 0));
 
         // same content, new mtime: rehash once, refresh
-        let later = SystemTime::now() + Duration::from_secs(5);
+        let later = SystemTime::now() - Duration::from_secs(30);
         open_rw(&f).set_modified(later).unwrap();
         let r = validate(&mut obs, 2).unwrap();
         assert_eq!((r.rehashed, r.refreshed), (1, 1));
@@ -331,6 +354,9 @@ mod tests {
         let d = tempdir().unwrap();
         let f = d.path().join("flake.nix");
         fs::write(&f, b"1").unwrap();
+        open_rw(&f)
+            .set_modified(SystemTime::now() - Duration::from_secs(60))
+            .unwrap();
         let meta = fs::metadata(&f).unwrap();
         let native = f.as_os_str().as_bytes();
         let trace = Trace::enabled();
