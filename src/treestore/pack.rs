@@ -17,7 +17,7 @@ use crate::sys::fs as sysfs;
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::fs::{self, File};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
@@ -29,6 +29,16 @@ pub type Id = [u8; 32];
 
 pub fn id_of(bytes: &[u8]) -> Id {
     *blake3::hash(bytes).as_bytes()
+}
+
+/// An object at least this big is streamed in, uncompressed, and never held
+/// in memory whole.
+pub const STREAM: u64 = 64 << 20;
+
+pub fn id_of_reader(r: &mut dyn Read) -> io::Result<Id> {
+    let mut h = blake3::Hasher::new();
+    io::copy(r, &mut h)?;
+    Ok(*h.finalize().as_bytes())
 }
 
 const MAGIC: &[u8; 8] = b"ietspack";
@@ -294,14 +304,55 @@ impl PackWriter {
         self.push(id, &p.payload, p.raw, p.flags)
     }
 
+    /// An object of `raw` bytes copied from `r` as it is, for one of at least
+    /// [`STREAM`] bytes.
+    pub fn add_stream(&mut self, id: Id, r: &mut dyn Read, raw: u64) -> io::Result<()> {
+        if !self.ids.insert(id) {
+            return Ok(());
+        }
+        if io::copy(r, &mut self.file)? != raw {
+            return Err(io::Error::other(
+                "an object changed size while it was stored",
+            ));
+        }
+        self.entries.push((
+            id,
+            Loc {
+                offset: self.at,
+                stored: raw,
+                raw,
+                flags: 0,
+            },
+        ));
+        self.at += raw;
+        Ok(())
+    }
+
     /// An object copied from another pack as it is stored, for a compaction:
-    /// nothing is decompressed or compressed again.
+    /// nothing is decompressed or compressed again. It goes through in
+    /// chunks, as a streamed object may be any size.
     pub fn copy(&mut self, id: Id, from: &Pack, loc: Loc) -> io::Result<()> {
         if !self.ids.insert(id) {
             return Ok(());
         }
-        let stored = from.stored_bytes(loc)?;
-        self.push(id, &stored, loc.raw, loc.flags)
+        let mut buf = vec![0u8; loc.stored.min(1 << 20) as usize];
+        let mut done = 0;
+        while done < loc.stored {
+            let n = (loc.stored - done).min(buf.len() as u64) as usize;
+            sysfs::read_exact_at(&from.file, &mut buf[..n], loc.offset + done)
+                .map_err(|_| corrupt("truncated"))?;
+            self.file.write_all(&buf[..n])?;
+            done += n as u64;
+        }
+        self.entries.push((
+            id,
+            Loc {
+                offset: self.at,
+                ..loc
+            },
+        ));
+        self.at += loc.stored;
+        Ok(())
     }
 
     fn push(&mut self, id: Id, payload: &[u8], raw: u64, flags: u8) -> io::Result<()> {
@@ -523,6 +574,18 @@ mod tests {
             vec![b'a'; 4096],
             (0..5000u32).flat_map(|i| i.to_le_bytes()).collect(),
         ]
+    }
+
+    #[test]
+    fn a_streamed_object_reads_back() {
+        let d = tempdir().unwrap();
+        let o = vec![7u8; 4096];
+        let id = id_of_reader(&mut &o[..]).unwrap();
+        assert_eq!(id, id_of(&o));
+        let mut w = PackWriter::new(d.path()).unwrap();
+        w.add_stream(id, &mut &o[..], o.len() as u64).unwrap();
+        let p = Pack::open(&w.finish().unwrap().unwrap()).unwrap().unwrap();
+        assert_eq!(p.read(p.find(&id).unwrap()).unwrap(), o);
     }
 
     #[test]

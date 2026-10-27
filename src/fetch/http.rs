@@ -387,7 +387,7 @@ pub fn get(
 ) -> Result<u64> {
     let undo = |r: Box<dyn Read>| {
         if decompress {
-            decompress_reader(r)
+            decompress_reader(r, layers_budget(limits.max_size))
         } else {
             Ok(r)
         }
@@ -754,13 +754,44 @@ impl Read for MultiGz {
 /// calls the stream a bomb: a doubly compressed tarball is one Nix accepts.
 const MAX_FILTERS: usize = 8;
 
+/// What the layers of an archive within `max_size` may read: every layer
+/// about that much, with room for the framing that grows incompressible
+/// data. `drain` still holds the output to `max_size`.
+fn layers_budget(max_size: u64) -> u64 {
+    max_size.saturating_mul(2 * (MAX_FILTERS as u64 + 1))
+}
+
+/// The bytes every filter layer reads, charged against one budget, so the
+/// work of a layer that outputs little, such as a run of empty gzip members,
+/// is bounded too.
+struct Charged {
+    inner: Box<dyn Read>,
+    left: Rc<Cell<u64>>,
+}
+
+impl Read for Charged {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        let left = self.left.get().checked_sub(n as u64).ok_or_else(|| {
+            io::Error::other("the archive's layers of compression decompress to too much")
+        })?;
+        self.left.set(left);
+        Ok(n)
+    }
+}
+
 /// `read` with the compression its first bytes announce undone, as
 /// `archive_read_support_filter_all` does it, without holding the stream. A
 /// filter's own output is sniffed again, so a doubly compressed archive
-/// unpacks.
-pub fn decompress_reader(read: Box<dyn Read>) -> Result<Box<dyn Read>> {
+/// unpacks. What the layers read together may not exceed `budget`.
+pub fn decompress_reader(read: Box<dyn Read>, budget: u64) -> Result<Box<dyn Read>> {
+    let left = Rc::new(Cell::new(budget));
     let mut read = read;
     for _ in 0..MAX_FILTERS {
+        read = Box::new(Charged {
+            inner: read,
+            left: left.clone(),
+        });
         let mut head = [0u8; 6];
         let mut n = 0;
         while n < head.len() {
@@ -799,7 +830,7 @@ pub fn decompress_reader(read: Box<dyn Read>) -> Result<Box<dyn Read>> {
 /// `bytes` with the compression it announces undone.
 pub fn decompress(bytes: Vec<u8>) -> Result<Vec<u8>> {
     let mut out = Vec::new();
-    decompress_reader(Box::new(Cursor::new(bytes)))?
+    decompress_reader(Box::new(Cursor::new(bytes)), u64::MAX)?
         .read_to_end(&mut out)
         .map_err(|e| Error::io("cannot decompress the stream", e))?;
     Ok(out)
@@ -919,6 +950,36 @@ mod tests {
                 .to_string()
                 .contains("layers")
         );
+
+        // empty members that output nothing still cost what they are read as
+        let empty = gz(b"");
+        let members = empty.repeat(1 << 14);
+        let r = decompress_reader(Box::new(Cursor::new(gz(&members))), 1 << 16);
+        let mut sink = Vec::new();
+        assert!(
+            r.and_then(|mut r| r.read_to_end(&mut sink).map_err(|e| Error::io("x", e)))
+                .is_err()
+        );
+
+        // incompressible bytes compressed twice still fit the budget of
+        // their size
+        let mut x = 0x9e37_79b9_7f4a_7c15u64;
+        let noise: Vec<u8> = (0..800 << 10)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                x as u8
+            })
+            .collect();
+        let mut r = decompress_reader(
+            Box::new(Cursor::new(gz(&gz(&noise)))),
+            layers_budget(1 << 20),
+        )
+        .unwrap();
+        let mut out = Vec::new();
+        r.read_to_end(&mut out).unwrap();
+        assert_eq!(out, noise);
     }
 
     #[test]
