@@ -108,6 +108,7 @@ pub fn from_outputs(
     fragment: &str,
     want: Want,
 ) -> EvalResult<Vec<Found>> {
+    let _entered = ev.enter();
     let candidates = attr_paths(prefixes, fragment, ev.current_system());
     let mut found = Vec::new();
     for c in &candidates {
@@ -140,6 +141,7 @@ pub fn complete_in_flake(
     p: Prefixes,
     fragment: &str,
 ) -> Option<Vec<String>> {
+    let _entered = ev.enter();
     let fr = flake_ref(loc, &cwd()).ok()?;
     let outputs = flake::outputs(ev, &fr).ok()?;
     Some(complete_fragment(ev, outputs, p, fragment))
@@ -147,6 +149,7 @@ pub fn complete_in_flake(
 
 /// The `-A` completion of `prefix` under the root `input`.
 pub fn complete_in_input(ev: &mut Evaluator, input: &Input, prefix: &str) -> Option<Vec<String>> {
+    let _entered = ev.enter();
     let cwd = cwd();
     let root = match input {
         Input::Expr(e) => ev.eval_string(e, &cwd).ok()?,
@@ -250,6 +253,7 @@ pub fn find_along_attr_path(
     attr_path: &str,
     args: Word,
 ) -> EvalResult<Word> {
+    let _entered = ev.enter();
     let mut v = root;
     let path = flake::parse_attr_path(attr_path)
         .map_err(|e| Error::boxed(ErrorKind::Parse, e.to_string(), Pos::NONE))?;
@@ -380,6 +384,7 @@ pub fn drv_roots(
     v: Word,
     roots: &mut Vec<(StorePath, Option<String>)>,
 ) -> EvalResult<()> {
+    let _entered = ev.enter();
     let bad = |msg: String| Error::boxed(ErrorKind::Eval, msg, Pos::NONE);
     let v = ev.force(v)?;
     if let Some(attrs) = v.as_attrs() {
@@ -448,6 +453,7 @@ pub fn roots_of(
     attr: &str,
     roots: &mut Vec<(StorePath, Option<String>)>,
 ) -> EvalResult<()> {
+    let _entered = ev.enter();
     let v = ev.auto_call(v, args)?;
     let Some(tree) = v.as_attrs().filter(|a| a.get(ev.s.drv_path).is_none()) else {
         return drv_roots(ev, v, roots);
@@ -487,6 +493,7 @@ pub fn get_drvs_at(
     seen: &mut HashSet<(String, String)>,
     attr: &str,
 ) -> EvalResult<()> {
+    let _entered = ev.enter();
     let v = ev.auto_call(v, args)?;
     let v = ev.force(v)?;
     if one_derivation(ev, v, out, seen, attr)? {
@@ -601,6 +608,7 @@ pub struct App {
 /// `outPath/bin/<mainProgram>`, and `mainProgram` is `meta.mainProgram`, else
 /// `pname`, else `name` without its version (names.cc:DrvName).
 pub fn to_app(ev: &mut Evaluator, v: Word, attr_path: &str) -> EvalResult<App> {
+    let _entered = ev.enter();
     let v = ev.force(v)?;
     let missing = |what: &str| {
         Error::boxed(
@@ -683,6 +691,7 @@ pub struct Install {
 /// (installables.cc:Installable::toDerivations, which ignores the outputs).
 /// `what` names the installable in the error a non-derivation gets.
 pub fn to_derivation(ev: &mut Evaluator, v: Word, what: &str) -> EvalResult<StorePath> {
+    let _entered = ev.enter();
     let v = ev.force(v)?;
     let not_a_drv = || {
         Error::boxed(
@@ -706,6 +715,7 @@ pub fn to_derivation(ev: &mut Evaluator, v: Word, what: &str) -> EvalResult<Stor
 /// output for an attr-path installable and `out` for a flake one. `what` names
 /// the installable in the error a non-derivation gets.
 pub fn to_install(ev: &mut Evaluator, v: Word, what: &str, flake: bool) -> EvalResult<Install> {
+    let _entered = ev.enter();
     let v = ev.force(v)?;
     let unsupported = |msg: String| Error::boxed(ErrorKind::Unsupported, msg, Pos::NONE);
     let not_a_drv = || unsupported(format!("the installable '{what}' is not a derivation"));

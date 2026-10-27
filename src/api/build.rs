@@ -66,6 +66,7 @@ pub fn transport(url: Option<&str>, cfg: &Config) -> Result<Transport> {
 /// The upload plan for `roots`, from the derivations and sources this
 /// evaluation made.
 pub fn plan(ev: &Evaluator, roots: &[StorePath]) -> Result<Plan> {
+    let _entered = ev.session().enter();
     let drvs = ev.drv.drvs.lock();
     let sources = ev.known.origins();
     plan_with(roots, &drvs, &sources)

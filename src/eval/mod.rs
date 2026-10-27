@@ -37,7 +37,7 @@ use crate::runtime::{
     Arena, AttrsObj, Cell, Ctx, EnvObj, Kind, ListObj, MAX_LEAVES, StringObj, ThunkObj, UNION_MIN,
     Value, ValueType, Word, ctx_to_arena, leaf_count,
 };
-use crate::session::Session;
+use crate::session::{Entered, Session};
 use crate::source::LazyStore;
 use crate::store::locate;
 use crate::store::path::{StorePath, store_dir, strip_store_dir};
@@ -590,6 +590,9 @@ impl EvalConfig {
         if !self.pure {
             prefetch_store_entries(&self.search_path, &self.session);
         }
+        // the builtins read the settings of this session, not the thread's
+        let session = self.session.clone();
+        let _entered = session.enter();
         let mut arena = Arena::in_heap(self.session.heap.clone());
         let mut interner = Interner::in_heap(self.session.heap.clone());
         for name in NIX_STATIC_SYMBOLS {
@@ -642,7 +645,7 @@ impl EvalConfig {
             nr_store_adds: 0,
             t_compile: Duration::ZERO,
             totals: Default::default(),
-            fold_arenas: Session::current().settings().stats >= 1,
+            fold_arenas: self.session.settings().stats >= 1,
             sym_strings: SymWords::new(),
             src_to_store: Default::default(),
             known: Default::default(),
@@ -729,6 +732,15 @@ impl Evaluator {
     #[inline]
     pub fn session(&self) -> &Arc<Session> {
         &self.session
+    }
+
+    /// Makes this evaluator's session the thread's until the guard drops, so
+    /// what evaluation reads without an evaluator at hand (the settings,
+    /// nix.conf, the log, the tree store) is its own. The `api` calls that
+    /// take an evaluator, `api::value::Eval` and `parallel::try_run` do this
+    /// themselves (docs/reference/library.md).
+    pub fn enter(&self) -> Entered {
+        self.session.enter()
     }
 
     #[inline]
