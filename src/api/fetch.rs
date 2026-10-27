@@ -43,7 +43,7 @@ pub fn url_hash(url: &str, unpack: bool, algo: HashAlgo) -> Result<Hash> {
 /// and the derivation the answer came from: `root` with a fake hash, built so
 /// the mismatch reports the real one.
 pub fn drv_hash(ev: &Evaluator, root: &StorePath) -> Result<(String, StorePath)> {
-    let _entered = ev.enter();
+    let _entered = ev.session().enter();
     let mut drvs = ev.drv.drvs.lock().clone();
     let (rewritten, name) = rewrite(root, &mut drvs)?;
     let hash = build(ev, &rewritten, &name, &drvs)?;
