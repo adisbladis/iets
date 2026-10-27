@@ -55,7 +55,10 @@ A small function stands in where the type behind it would pin internals:
 `Evaluator` and `Session` are re-exported with no wrapper. A wrapper of
 `Evaluator` would make every `api` call that takes an evaluator take the
 wrapper instead, and `api::value::Eval` already is the safe handle on its
-values.
+values. What the re-export would pin is their public fields, so the fields
+a host has no use for are `pub(crate)`. A `Session` shows its `log`, `heap`
+and `cancel`. An `Evaluator` shows `drv`, the derivations a run made, which
+`examples/drv_info.rs` lists, and the fuzz target's hidden `nix_eq`.
 
 ## What is left outside
 
