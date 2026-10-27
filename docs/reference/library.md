@@ -25,7 +25,7 @@ because a word made up from bits would let a safe call read any address.
 | Create an evaluator | `api::Evaluator::new()` for the defaults; `api::EvalConfig::new()`, its setters, then `build()`; `no_lints()` for an evaluator that reports no lint |
 | Settings of the arguments | `EvalArgs::config(base)` puts the lints, the IR cache, the search path and `--dump-drvs` on an `EvalConfig` |
 | The state a run owns | `api::Session::new()`, or `Session::with_env(api::Env)` for an environment of its own; `Session::enter()`, `Evaluator::enter()` ("What the host owns") |
-| The thread you evaluate on | `std::thread::Builder::stack_size(api::MAIN_STACK)`, the room the demand fiber has |
+| The stack you evaluate on | `api::on_main_stack(f)`: `f` on this thread with the room the demand fiber has, `api::MAIN_STACK` reserved; `api::StackError` when it cannot be reserved ("The evaluator's stack") |
 | The memory a session holds | `Session::heap`, an `api::memory::Heap`: `bytes()`, `set_release(Release)`, `join(&MemoryGroup)` ("Sessions and memory") |
 | Bound several sessions together | `api::memory::{MemoryGroup, MemoryHost}` ("Bounding memory") |
 | A session that ran out of memory or symbols | `Heap::exhausted() -> Option<api::memory::Exhausted>`, `ErrorKind::Exhausted` ("Running out of memory") |
@@ -238,6 +238,33 @@ next call. It stops with `error: too many symbols` at `MAX_SYMS` names.
 A host that must survive those bounds its group well below what the
 machine can map, or runs the evaluator in a process of its own:
 `docs/explanation/out-of-memory.md` has why.
+
+### The evaluator's stack
+
+A deep evaluation needs the room the demand fiber has, `api::MAIN_STACK`
+(4 GiB), or it ends with a stack overflow before the call-depth error.
+`api::on_main_stack(f)` gives it: it runs `f` on the calling thread, switched
+onto a stack of that size, and returns what `f` returns.
+
+```rust
+let value = api::on_main_stack(|| {
+    let mut ev = EvalConfig::new().session(session.clone()).build();
+    evaluate(&mut ev)
+})?;                                    // Err(api::StackError): not reserved
+```
+
+The stack is reserved, as a fiber's is: a page of it costs memory once the
+evaluation reaches it. A thread built with `stack_size(api::MAIN_STACK)` is
+charged its whole stack, so on a machine with less than 4 GiB of memory and
+swap the kernel refuses to start it. A panic in `f` unwinds out of
+`on_main_stack` as it would out of `f`.
+
+Under strict overcommit (`vm.overcommit_memory = 2`) the kernel charges a
+reservation too. With less than 4 GiB of the commit limit left,
+`on_main_stack` runs nothing and returns the `StackError`, whose message
+names the size and the kernel's reason. An evaluator's symbol tables are
+reservations as well, and a refused one stops the process
+(`docs/explanation/out-of-memory.md`).
 
 ## The value API
 

@@ -23,11 +23,10 @@ pub mod search;
 
 use help::{arg_error, each_arg};
 
-use crate::api::{self, flake};
+use crate::api::{self, StackError, flake};
 use crate::eval::{Error, Evaluator};
 use crate::lint::{self, Level, Scope};
 use crate::log::{self, Activity};
-use crate::parallel::fiber::StackError;
 use crate::runtime::Word;
 use crate::session::{self, Session};
 use crate::{config, error, ignored};
@@ -287,7 +286,8 @@ pub fn run_reported<T: Send + 'static>(
     run.eval(f).unwrap_or_else(stacks)
 }
 
-fn stacks<R>(e: StackError) -> R {
+/// A stack the command could not reserve, reported: exit 1.
+pub(crate) fn stacks<R>(e: StackError) -> R {
     log::line(&format!("iets: {e}"));
     session::exit(1)
 }

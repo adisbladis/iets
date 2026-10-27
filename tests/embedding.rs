@@ -1,10 +1,10 @@
 //! What a host that embeds the evaluator calls, through `iets::api` alone: a
 //! session of its own with an isolated environment and bounded memory, a
-//! pure evaluator on a thread with the demand fiber's stack, a value kept
-//! across borrows, the upload plan of what the evaluation made, an upload the
-//! host cancels, and the error kinds it tells apart
-//! (docs/explanation/embedding-surface.md). The file names no other module
-//! of the crate, and its last test holds it to that.
+//! pure evaluator on the demand fiber's stack, a value kept across borrows,
+//! the upload plan of what the evaluation made, an upload the host cancels,
+//! and the error kinds it tells apart (docs/explanation/embedding-surface.md).
+//! The file names no other module of the crate, and its last test holds it
+//! to that.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -58,13 +58,11 @@ fn evaluator(session: &Arc<Session>) -> Evaluator {
         .build()
 }
 
-/// `f` on a thread with the stack the demand fiber has, so a deep evaluation
-/// meets the call-depth error first.
-fn on_main_stack<R: Send>(f: impl FnOnce() -> R + Send) -> R {
-    thread::scope(|s| {
-        let t = thread::Builder::new().stack_size(api::MAIN_STACK);
-        t.spawn_scoped(s, f).unwrap().join().unwrap()
-    })
+/// `f` on the stack the demand fiber has, so a deep evaluation meets the
+/// call-depth error first. The stack is reserved, so it costs nothing until
+/// used.
+fn on_main_stack<R>(f: impl FnOnce() -> R) -> R {
+    api::on_main_stack(f).expect("the main stack is reserved")
 }
 
 /// The store path the string `name` of `v` names.
