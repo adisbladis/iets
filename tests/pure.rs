@@ -7,6 +7,8 @@ use hermetic::{Iets, bin, stderr, stdout};
 use rstest::rstest;
 
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::symlink;
 use std::path::Path;
 use std::process::Output;
 use tempfile::{TempDir, tempdir};
@@ -57,6 +59,43 @@ fn a_read_in_the_project_is_pure_and_one_above_it_is_not(bin: Iets) {
     let o = run(&bin, &repo, &["eval", "--raw", "--impure", "-f", "up.nix"]);
     assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
     assert_eq!(stdout(&o), "out");
+}
+
+/// A link or a `..` that leads out of the project is read as what it reaches.
+#[cfg(unix)]
+#[rstest]
+#[case::file_link("builtins.readFile ./file-link")]
+#[case::dir_link("builtins.readFile ./dir-link/outside.txt")]
+#[case::import_link("import ./nix-link")]
+#[case::home_dots("builtins.readFile ~/repo/../outside.txt")]
+#[case::path_exists("if builtins.pathExists ./dir-link/outside.txt then \"\" else 0")]
+fn a_link_out_of_the_project_is_forbidden(bin: Iets, #[case] expr: &str) {
+    let d = checkout();
+    let repo = d.path().join("repo");
+    fs::write(d.path().join("outside.nix"), "1").unwrap();
+    symlink("../outside.txt", repo.join("file-link")).unwrap();
+    symlink("..", repo.join("dir-link")).unwrap();
+    symlink("../outside.nix", repo.join("nix-link")).unwrap();
+    fs::write(repo.join("e.nix"), expr).unwrap();
+    let o = bin
+        .cmd()
+        .args(["eval", "--raw", "-f", "e.nix"])
+        .current_dir(&repo)
+        .env("HOME", d.path())
+        .env("IETS_CACHE", "0")
+        .output()
+        .expect("run iets");
+    if expr.contains("pathExists") {
+        assert!(
+            stderr(&o).contains("cannot coerce an integer"),
+            "{}",
+            stderr(&o)
+        );
+        return;
+    }
+    assert_eq!(o.status.code(), Some(1), "{}", stdout(&o));
+    let e = stderr(&o);
+    assert!(e.contains("is forbidden in pure evaluation mode"), "{e}");
 }
 
 /// No marker above the entry file: its own directory is the project, so a

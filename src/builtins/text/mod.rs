@@ -304,7 +304,7 @@ fn hash_file(ev: &mut Evaluator, args: &[Word], pos: Pos) -> EvalResult<Word> {
     let path = paths::realise_path(ev, args[1], pos)?;
     let follow = Follow::Full;
     let (path, at) = store_hooks::located(ev, path, follow, pos)?;
-    let at = store_hooks::check(ev, at, &path, pos)?;
+    let at = store_hooks::check(ev, at, &path, follow, pos)?;
     coerce::read_through_copy(ev, &path, pos)?;
     let data = match at.read(ev, true) {
         Ok(d) => d,

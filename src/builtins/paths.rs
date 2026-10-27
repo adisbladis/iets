@@ -283,7 +283,7 @@ fn realise_existing(
             (p, at)
         }
     };
-    let at = store_hooks::check(ev, at, &p, pos)?;
+    let at = store_hooks::check(ev, at, &p, follow.unwrap_or(Follow::Ancestors), pos)?;
     if at.hidden() {
         return Err(io_error(errno::not_found(), "getting status of", &p, pos));
     }
@@ -433,7 +433,7 @@ fn path_exists(ev: &mut Evaluator, args: &[Word], pos: Pos) -> EvalResult<Word> 
         Follow::Ancestors
     };
     let (p, at) = store_hooks::located(ev, p, follow, pos)?;
-    if !store_hooks::allowed(ev, &p) {
+    if !store_hooks::admits(ev, at.as_ref(), &p, follow, pos)? {
         return Ok(Word::FALSE);
     }
     coerce::read_through_copy(ev, &p, pos)?;
@@ -637,7 +637,7 @@ fn add_path_inner(
     // A path under a tree this evaluation copied reads the local tree, with
     // that tree's filter applied before this call's `filter`, or the input's
     // spool; the filter function still sees the store path Nix would show it.
-    let at = store_hooks::check(ev, located, path, pos)?;
+    let at = store_hooks::check(ev, located, path, Follow::Full, pos)?;
     let missing = |p: &[u8]| io_error(errno::not_found(), "getting status of", p, pos);
     let at = if virtual_tree {
         at

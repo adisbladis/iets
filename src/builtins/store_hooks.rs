@@ -88,6 +88,29 @@ pub fn allowed(ev: &Evaluator, path: &[u8]) -> bool {
     !ev.pure() || ev.known.under(path).is_some() || ev.in_project(path)
 }
 
+/// [`allowed`] for the path a read of `path` reaches: a path in the project
+/// by its text is followed through its links and `..` unless the kernel shows
+/// it stays there. `at` is where [`located`] put it.
+pub fn admits(
+    ev: &Evaluator,
+    at: Option<&SrcPath>,
+    path: &[u8],
+    mode: Follow,
+    pos: Pos,
+) -> EvalResult<bool> {
+    if !allowed(ev, path) {
+        return Ok(false);
+    }
+    if at.is_some()
+        || !ev.pure()
+        || !ev.in_project(path)
+        || ev.beneath_project(path, mode == Follow::Full)
+    {
+        return Ok(true);
+    }
+    Ok(allowed(ev, &resolve_links(ev, path, mode, pos)?))
+}
+
 /// Which components a resolution follows (source-accessor.hh:SymlinkResolution).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Follow {
@@ -197,8 +220,14 @@ pub fn fs_path(path: &[u8]) -> SrcPath {
 /// `AllowListSourceAccessor` throws: what every read of a file goes through.
 /// `pathExists` (false, not an error) and a `.drv` import (read through the
 /// store, as Nix does) are the readers that resolve the path themselves.
-pub fn check(ev: &Evaluator, at: Option<SrcPath>, path: &[u8], pos: Pos) -> EvalResult<SrcPath> {
-    if allowed(ev, path) {
+pub fn check(
+    ev: &Evaluator,
+    at: Option<SrcPath>,
+    path: &[u8],
+    mode: Follow,
+    pos: Pos,
+) -> EvalResult<SrcPath> {
+    if admits(ev, at.as_ref(), path, mode, pos)? {
         let at = at.unwrap_or_else(|| fs_path(path));
         if at.hidden()
             && let Some(e) = untracked(&at, pos)
@@ -219,7 +248,7 @@ pub fn check(ev: &Evaluator, at: Option<SrcPath>, path: &[u8], pos: Pos) -> Eval
 
 /// [`check`] of `path` located afresh.
 pub fn open(ev: &Evaluator, path: &[u8], pos: Pos) -> EvalResult<SrcPath> {
-    check(ev, locate(ev, path), path, pos)
+    check(ev, locate(ev, path), path, Follow::Full, pos)
 }
 
 /// git.cc:makeNotAllowedError, in Nix's words: a path on disk that a
