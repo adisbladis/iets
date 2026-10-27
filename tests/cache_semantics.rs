@@ -11,6 +11,7 @@ use rstest::{fixture, rstest};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 use tempfile::TempDir;
@@ -46,11 +47,16 @@ impl Work {
         self.path(rel).to_str().unwrap().to_string()
     }
 
+    /// Each write gets an mtime of its own, long past, so the cache trusts
+    /// the stat of every file and counts only the rehashes a test causes.
     fn write(&self, rel: &str, text: &str) -> String {
+        static CLOCK: AtomicU64 = AtomicU64::new(1_000_000_000);
         let p = self.path(rel);
         fs::create_dir_all(p.parent().unwrap()).unwrap();
         fs::write(&p, text).unwrap();
-        p.to_str().unwrap().to_string()
+        let s = p.to_str().unwrap().to_string();
+        touch(CLOCK.fetch_add(1, Ordering::Relaxed), &[&s]);
+        s
     }
 
     fn iets(&self) -> Command {
