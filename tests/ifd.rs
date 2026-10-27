@@ -1,5 +1,6 @@
 //! A read of a derivation output that is already in the store, under a
 //! store directory of the test's own.
+#![cfg(feature = "cli")]
 
 mod hermetic;
 

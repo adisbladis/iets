@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::str::from_utf8;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
-use std::{fs, mem, ptr};
+use std::{fs, mem};
 
 pub use error::{Error, ErrorKind, EvalResult, Pos};
 
@@ -3031,8 +3031,12 @@ impl Evaluator {
             self.import_cache.len(),
             crate::builtins::text::regex_cache_len()
         );
-        // SAFETY: a null argument prints to stderr.
-        unsafe { libmimalloc_sys::mi_stats_print(ptr::null_mut()) };
+        // SAFETY: a null argument prints to stderr. mimalloc is the binary's
+        // allocator; a library host has its own.
+        #[cfg(feature = "cli")]
+        unsafe {
+            libmimalloc_sys::mi_stats_print(std::ptr::null_mut())
+        };
         if self.session.settings().stats >= 2 {
             #[cfg(feature = "stats2")]
             {

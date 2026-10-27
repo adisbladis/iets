@@ -1,6 +1,7 @@
 //! `iets diff` on two small derivations that differ in an env var, in an
 //! input derivation and in an input source: the text, the JSON, the exit
 //! codes and the depth limit.
+#![cfg(feature = "cli")]
 
 mod hermetic;
 

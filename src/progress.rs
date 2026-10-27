@@ -298,10 +298,7 @@ fn summary(all: &BTreeMap<u64, Task>, now: Instant, builds: bool) -> Option<Stri
             many => {
                 let mut s = format!("{} {}", many.len(), verb(*ty));
                 if counts_bytes(*ty) {
-                    s.push_str(&format!(
-                        ", {}",
-                        crate::cli::render::size(many.iter().map(|k| k.done).sum())
-                    ));
+                    s.push_str(&format!(", {}", size(many.iter().map(|k| k.done).sum())));
                 }
                 s
             }
@@ -313,13 +310,9 @@ fn summary(all: &BTreeMap<u64, Task>, now: Instant, builds: bool) -> Option<Stri
 fn one(k: &Task, now: Instant) -> String {
     let mut s = short(&k.text);
     if k.expected > 0 && counts_bytes(k.ty) {
-        s.push_str(&format!(
-            ", {} of {}",
-            crate::cli::render::size(k.done),
-            crate::cli::render::size(k.expected)
-        ));
+        s.push_str(&format!(", {} of {}", size(k.done), size(k.expected)));
     } else if counts_bytes(k.ty) && k.done > 0 {
-        s.push_str(&format!(", {}", crate::cli::render::size(k.done)));
+        s.push_str(&format!(", {}", size(k.done)));
     } else if k.expected > 0 {
         s.push_str(&format!(", {}/{}", k.done, k.expected));
     }
@@ -339,6 +332,17 @@ fn one(k: &Task, now: Instant) -> String {
         (false, false) => {}
     }
     s
+}
+
+/// util.cc:renderSize: KiB at least, one decimal.
+pub fn size(b: u64) -> String {
+    let (mut unit, mut v) = (0, b);
+    while v > 1024 && unit < 8 {
+        unit += 1;
+        v /= 1024;
+    }
+    let scaled = b as f64 / 1024f64.powi(unit.max(1));
+    format!("{scaled:.1} {}iB", b"KKMGTPEZY"[unit as usize] as char)
 }
 
 /// Longer quoted names keep only their ends, so the numbers after them

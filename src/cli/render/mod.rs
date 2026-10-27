@@ -55,16 +55,8 @@ pub fn pretty() -> bool {
     Session::current().out.is_terminal()
 }
 
-/// util.cc:renderSize: KiB at least, one decimal.
-pub fn size(b: u64) -> String {
-    let (mut unit, mut v) = (0, b);
-    while v > 1024 && unit < 8 {
-        unit += 1;
-        v /= 1024;
-    }
-    let scaled = b as f64 / 1024f64.powi(unit.max(1));
-    format!("{scaled:.1} {}iB", b"KKMGTPEZY"[unit as usize] as char)
-}
+/// The progress line's sizes, which a library build shows too.
+pub use crate::progress::size;
 
 /// A status line on stderr: what a run did, not what it produced.
 pub fn status(text: &str) {

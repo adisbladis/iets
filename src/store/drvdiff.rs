@@ -230,6 +230,8 @@ mod tests {
 
     use super::*;
     use crate::api::render::Report;
+    // the command line's text of a diff, which a library build has not got
+    #[cfg(feature = "cli")]
     use crate::cli::render::Text;
     use crate::store::drv::Derivation;
     use crate::store::hash::{HashAlgo, hash_bytes};
@@ -284,6 +286,7 @@ mod tests {
         let p = s.add(drv("foo", &["-c", "true"], &[("x", "1")]));
         let d = s.diff(&p, &p, 2);
         assert!(d.is_empty());
+        #[cfg(feature = "cli")]
         assert_eq!(d.text(), format!("{p} and {p} are the same derivation\n"));
     }
 
@@ -306,8 +309,11 @@ mod tests {
             ]
         );
         // an empty value is a value, not an absent entry
-        assert!(d.text().contains("env removed: gone=\n"));
-        assert!(d.text().contains("env added: new=\n"));
+        #[cfg(feature = "cli")]
+        {
+            assert!(d.text().contains("env removed: gone=\n"));
+            assert!(d.text().contains("env added: new=\n"));
+        }
         assert!(d.changed.is_empty());
     }
 
@@ -354,9 +360,12 @@ mod tests {
             items(&d.changed[0]),
             ["args||\"-c\"\n\"a\"\n|\"-c\"\n\"b\"\n"]
         );
-        let t = d.text();
-        assert!(t.contains("input drv changed: dep"), "{t}");
-        assert!(t.contains("+ \"b\""), "{t}");
+        #[cfg(feature = "cli")]
+        {
+            let t = d.text();
+            assert!(t.contains("input drv changed: dep"), "{t}");
+            assert!(t.contains("+ \"b\""), "{t}");
+        }
     }
 
     #[test]
@@ -372,6 +381,7 @@ mod tests {
         assert_eq!(d.changed.len(), 1);
         assert_eq!(d.changed[0].cut, Some("depth"));
         assert!(d.changed[0].items.is_empty());
+        #[cfg(feature = "cli")]
         assert!(d.text().contains("(stopped: depth; use --all)"));
     }
 

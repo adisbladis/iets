@@ -18,7 +18,6 @@ use std::{env, mem, process};
 
 use serde_json::{Value, json};
 
-use crate::cli::help;
 use crate::display::{Display, Term, Tty};
 use crate::eval::{Error, Pos};
 use crate::progress::{Board, Mode};
@@ -746,13 +745,13 @@ impl Report {
         v
     }
 
-    /// Prints the report and returns the exit code. Classic mode always
-    /// uses 1, as Nix does.
+    /// Prints the report and returns the exit code. Classic mode always uses
+    /// 1, as Nix does, and so does a host: neither names a native command.
     pub fn emit(&self) -> i32 {
         let text = self.text();
         out(&self.record(&text), Some(&text));
         match self.code {
-            _ if help::command().is_none() => 1,
+            _ if cur().command.lock().unwrap().is_none() => 1,
             "usage" => 2,
             "unsupported" => 3,
             _ => 1,

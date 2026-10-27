@@ -6,6 +6,7 @@ edition = "2024"
 [[bin]]
 name = "iets"
 path = "src/main.rs"
+required-features = ["cli"]
 [dependencies]
 sha2 = "0.11"
 blake3 = "1"
@@ -18,29 +19,32 @@ memchr = "2"
 getrandom = "0.4"
 toml = "1"
 serde_json = "1"
-tonic = { version = "0.14", default-features = false, features = ["codegen", "channel", "transport", "tls-ring"] }
-tonic-prost = "0.14"
-prost = "0.14"
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
-tokio-stream = "0.1"
+# the grpc:// store (src/remote/grpc): the `grpc` feature
+tonic = { version = "0.14", default-features = false, features = ["codegen", "channel", "transport", "tls-ring"], optional = true }
+tonic-prost = { version = "0.14", optional = true }
+prost = { version = "0.14", optional = true }
+tokio = { version = "1", features = ["net", "rt-multi-thread", "sync", "time"], optional = true }
+tokio-stream = { version = "0.1", optional = true }
 zstd = "0.14"
 lz4_flex = { version = "0.14", default-features = false, features = ["alloc", "safe-encode", "safe-decode"] }
-# The flake-input fetcher (src/fetch/http.rs, src/fetch/unpack.rs): the HTTP and
-# TLS halves are the ones tonic already brings; only the archive formats are new.
-hyper = { version = "1", default-features = false, features = ["client", "http1"] }
-hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
-http-body-util = "0.1"
-tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
-rustls-native-certs = "0.8"
+# The HTTP client (src/fetch/http.rs): the `http` feature. Its HTTP and TLS
+# halves are the ones tonic brings too.
+hyper = { version = "1", default-features = false, features = ["client", "http1"], optional = true }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio"], optional = true }
+http-body-util = { version = "0.1", optional = true }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"], optional = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"], optional = true }
+rustls-native-certs = { version = "0.8", optional = true }
 # the CA roots when the machine has none (src/fetch/roots.rs)
-webpki-roots = "1"
+webpki-roots = { version = "1", optional = true }
+# the archive formats, which a file:// tarball and the input store read too
 tar = { version = "0.4", default-features = false }
 flate2 = "1"
 lzma-rust2 = { version = "0.23", default-features = false, features = ["std", "xz"] }
 bzip2 = "0.6"
-mimalloc = "0.1"
-libmimalloc-sys = { version = "0.1", features = ["extended"] }
+# the binary's allocator (src/main.rs): the `cli` feature
+mimalloc = { version = "0.1", optional = true }
+libmimalloc-sys = { version = "0.1", features = ["extended"], optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
@@ -54,14 +58,43 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Threading",
 ] }
 
+# What a library build may leave out (docs/reference/library.md, "Features").
+# The worker protocol, over a Unix socket and over ssh, needs none of them.
 [features]
+default = ["cli"]
+# The `iets` binary and its command line (src/cli), which has every transport.
+cli = ["grpc", "http", "dep:mimalloc", "dep:libmimalloc-sys"]
+# The grpc:// store. Without it, opening one is an `unsupported` error.
+grpc = [
+    "dep:tonic",
+    "dep:tonic-prost",
+    "dep:prost",
+    "dep:tokio",
+    "dep:tokio-stream",
+    "dep:rustls",
+    "dep:rustls-native-certs",
+    "dep:webpki-roots",
+    "dep:tonic-prost-build",
+    "dep:protox",
+]
+# Downloads over http and https. Without it, one is an `offline` error.
+http = [
+    "dep:hyper",
+    "dep:hyper-util",
+    "dep:http-body-util",
+    "dep:tokio",
+    "dep:tokio-rustls",
+    "dep:rustls",
+    "dep:rustls-native-certs",
+    "dep:webpki-roots",
+]
 # Memory census behind IETS_STATS=2 (docs/reference/settings.md); off the hot path when unset.
 stats2 = []
 
 [build-dependencies]
 sha2 = "0.11"
-tonic-prost-build = "0.14"
-protox = "0.10"
+tonic-prost-build = { version = "0.14", optional = true }
+protox = { version = "0.10", optional = true }
 
 [profile.release]
 opt-level = 3
