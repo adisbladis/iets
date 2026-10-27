@@ -5,8 +5,9 @@
 //! An `Evaluator` keeps a handle to the session it was made in, so the hot
 //! paths read a field. Code with no evaluator at hand — the command line,
 //! a fetch, a build — uses [`Session::current`], the session this thread
-//! entered. A thread the library starts inherits it through
-//! [`bind`]. docs/reference/library.md says what a host owns.
+//! entered; the library's entry points that take an evaluator enter its
+//! session first (`Evaluator::enter`). A thread the library starts inherits
+//! it through [`bind`]. docs/reference/library.md says what a host owns.
 
 use std::cell::RefCell;
 use std::panic;
@@ -85,6 +86,8 @@ impl Session {
     }
 
     /// The session this thread entered, else the fallback one.
+    // never inlined: a fiber that migrates must not reuse another thread's slot
+    #[inline(never)]
     pub fn current() -> Arc<Session> {
         CURRENT
             .with(|c| c.borrow().clone())
@@ -92,15 +95,17 @@ impl Session {
     }
 
     /// Makes `self` this thread's session until the guard drops.
+    #[inline(never)]
     pub fn enter(self: &Arc<Session>) -> Entered {
         let prev = CURRENT.with(|c| c.borrow_mut().replace(self.clone()));
         Entered(prev)
     }
 
-    /// This session's settings: the environment knobs alone until
+    /// This session's settings, read from its own environment whichever
+    /// session the thread entered: the environment knobs alone until
     /// [`Session::load_settings`] reads the files (docs/reference/settings.md).
     pub fn settings(&self) -> &Settings {
-        self.settings.get_or_init(Settings::default)
+        self.settings.get_or_init(|| Settings::of_env(&self.env))
     }
 
     /// The environment settings with `IETS_STATS` at `level`, for a test that
@@ -109,17 +114,25 @@ impl Session {
     pub(crate) fn set_stats_for_test(&self, level: u8) {
         let s = Settings {
             stats: level,
-            ..Settings::default()
+            ..Settings::of_env(&self.env)
         };
         let _ = self.settings.set(s);
     }
 
-    /// Reads the `iets.toml` settings files and applies the `--iets-option` pairs.
-    /// Call it once, on an entered session, before anything reads a setting.
+    /// Reads the `iets.toml` settings files and applies the `--iets-option`
+    /// pairs. Call it once, before anything reads a setting.
     pub fn load_settings(&self, options: &[(String, String)]) -> error::Result<()> {
-        let s = Settings::load(options)?;
+        let s = Settings::load(&self.env, options)?;
         let _ = self.settings.set(s);
         Ok(())
+    }
+
+    /// nix.conf as this session's environment names it, read on first use
+    /// unless the command line loaded it already.
+    pub fn nix_conf(&self) -> &config::Config {
+        self.nix_conf.get_or_init(|| {
+            config::Config::read_in(&self.env, &[]).unwrap_or_else(|_| config::Config::empty())
+        })
     }
 }
 
@@ -137,6 +150,7 @@ pub fn exit(code: i32) -> ! {
 pub struct Entered(Option<Arc<Session>>);
 
 impl Drop for Entered {
+    #[inline(never)]
     fn drop(&mut self) {
         CURRENT.with(|c| *c.borrow_mut() = self.0.take());
     }
@@ -159,6 +173,7 @@ mod tests {
     use crate::eval::{ErrorKind, EvalConfig, Evaluator, Pos};
     use crate::runtime::Word;
     use crate::runtime::heap::{MemoryGroup, MemoryHost, Release, is_released};
+    use crate::sink::Sink;
     use crate::{parallel, print};
     use std::env;
     use std::process::{self, Command};
@@ -184,6 +199,64 @@ mod tests {
         }
         let _entered = a.enter();
         assert_eq!(crate::log::take_mismatches().len(), 1);
+    }
+
+    /// A session with `IETS_OFFLINE` set or not, `connect-timeout` in its
+    /// nix.conf, and a log of its own.
+    fn session_with(dir: &std::path::Path, offline: bool, timeout: u64) -> (Arc<Session>, Sink) {
+        let conf = format!("store = unix:///nonexistent/socket\nconnect-timeout = {timeout}");
+        let mut env = Env::isolated().with([
+            (
+                "IETS_CACHE_DIR",
+                dir.join(timeout.to_string()).into_os_string(),
+            ),
+            ("NIX_CONFIG", conf.into()),
+        ]);
+        if offline {
+            env = env.with([("IETS_OFFLINE", "1")]);
+        }
+        let s = Session::with_env(env);
+        let log = Sink::default();
+        s.log.write_to(Box::new(log.clone()));
+        (s, log)
+    }
+
+    /// Two sessions used from one thread that entered a third: each reads its
+    /// own settings, nix.conf and log, and so do its evaluators.
+    #[test]
+    fn an_evaluator_reads_its_own_session_wherever_the_thread_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("f");
+        std::fs::write(&file, "hello\n").unwrap();
+        let (a, a_log) = session_with(dir.path(), true, 7);
+        let (b, b_log) = session_with(dir.path(), false, 9);
+        let (third, third_log) = session_with(dir.path(), false, 11);
+        let _entered = third.enter();
+
+        assert!(a.settings().offline && !b.settings().offline);
+        let timeout = |s: &Session| s.nix_conf().int("connect-timeout").unwrap();
+        assert_eq!((timeout(&a), timeout(&b)), (Some(7), Some(9)));
+
+        let fetch = |name: &str| {
+            let url = format!("file://{}", file.display());
+            let hash = "sha256-WJG1tSLV3whtD/CxEPvZ0hu0/HFjrzTQgoai6Eb2vgM=";
+            format!(
+                r#"builtins.trace "in {name}" (builtins.fetchurl {{ url = "{url}"; sha256 = "{hash}"; }})"#
+            )
+        };
+        let (mut ev_a, mut ev_b) = (
+            EvalConfig::new().session(a.clone()).build(),
+            EvalConfig::new().session(b.clone()).build(),
+        );
+        let refused = evaluate(&mut ev_a, &fetch("a")).err();
+        assert_eq!(refused, Some(ErrorKind::Offline));
+        let got = evaluate(&mut ev_b, &fetch("b")).expect("b is not offline");
+        assert!(json(&mut ev_b, got).ends_with("-f\""));
+        assert!(a_log.text().contains("trace: in a"), "{}", a_log.text());
+        assert!(b_log.text().contains("trace: in b"), "{}", b_log.text());
+        assert_eq!(third_log.text(), "");
+        // each input store is under its own session's cache directory
+        assert!(dir.path().join("9").exists() && !dir.path().join("11").exists());
     }
 
     fn eval_in(s: &Arc<Session>, expr: &str) -> (Evaluator, Word) {
