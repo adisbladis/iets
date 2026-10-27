@@ -1,6 +1,6 @@
 //! Classic mode commands that evaluate, against the real Nix: stdout bytes and exit
 //! codes are Nix's.
-#![cfg(unix)]
+#![cfg(all(unix, feature = "cli"))]
 
 mod e2e;
 mod hermetic;

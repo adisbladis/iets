@@ -1,5 +1,6 @@
 //! Pure evaluation is the native default, and a checkout with no flake is
 //! what a pure run may read (docs/explanation/flakes-and-sources.md).
+#![cfg(feature = "cli")]
 
 mod hermetic;
 

@@ -1,6 +1,6 @@
 //! nix-shell, nix develop and nix fmt in classic mode, against the
 //! real Nix, on the fake stdenv of `tests/e2e/pkgs/shell.nix`.
-#![cfg(unix)]
+#![cfg(all(unix, feature = "cli"))]
 
 mod e2e;
 mod hermetic;

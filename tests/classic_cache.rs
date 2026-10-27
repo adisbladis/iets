@@ -2,7 +2,7 @@
 //! flake's value reads a file, a tarball input and, when impure, a variable,
 //! behind a `builtins.trace`. An evaluation prints the trace and a cache hit
 //! does not.
-#![cfg(unix)]
+#![cfg(all(unix, feature = "cli"))]
 
 mod e2e;
 mod hermetic;

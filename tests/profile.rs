@@ -1,5 +1,6 @@
 //! The sampled profile: what a run says when it cannot collect one, and the
 //! folded lines when it can.
+#![cfg(feature = "cli")]
 
 mod hermetic;
 

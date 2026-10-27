@@ -1,5 +1,6 @@
 //! `builtins.fetchurl` of a `file://` URL, against the store paths and the
 //! messages of `nix eval` (Nix 2.34.8) for the same file.
+#![cfg(feature = "cli")]
 
 mod hermetic;
 

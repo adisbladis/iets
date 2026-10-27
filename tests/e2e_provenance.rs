@@ -1,6 +1,6 @@
 //! Provenance end to end (docs/explanation/provenance.md): failures and build
 //! logs name the working copy, not the store path.
-#![cfg(unix)]
+#![cfg(all(unix, feature = "cli"))]
 
 mod e2e;
 mod hermetic;

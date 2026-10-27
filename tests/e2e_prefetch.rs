@@ -1,6 +1,6 @@
 //! `iets prefetch` (docs/reference/commands.md) against `nix store
 //! prefetch-file` and `nix hash`.
-#![cfg(unix)]
+#![cfg(all(unix, feature = "cli"))]
 
 mod e2e;
 mod hermetic;

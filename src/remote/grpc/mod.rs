@@ -1,21 +1,30 @@
 //! The `grpc://` transport: nix-grpc-store (github.com/Mic92/nix-grpc-store).
 //!
-//! Here is its URL, `GrpcConfig`. The connection is `client::Client`: the
-//! evaluator stays synchronous, so one tokio runtime lives inside it and
-//! every call is a `block_on`. See `docs/reference/builders.md`.
+//! Here is its URL, `GrpcConfig`, which every build parses. The connection is
+//! `client::Client`, and it and the modules that use it are the `grpc`
+//! feature's: the evaluator stays synchronous, so one tokio runtime lives
+//! inside a client and every call is a `block_on`. See
+//! `docs/reference/builders.md`.
 
+#[cfg(feature = "grpc")]
 pub mod backend;
+#[cfg(feature = "grpc")]
 pub mod build;
+#[cfg(feature = "grpc")]
 mod client;
 pub mod drvwire;
+#[cfg(feature = "grpc")]
 pub mod health;
+#[cfg(feature = "grpc")]
 pub mod sched;
 
+#[cfg(feature = "grpc")]
 #[allow(clippy::all, clippy::pedantic)]
 pub mod proto {
     tonic::include_proto!("nix.remote");
 }
 
+#[cfg(feature = "grpc")]
 pub use client::{Client, Headers, StoreInfo, c_request, cancelled, first_line, gone_away};
 
 use std::path::PathBuf;

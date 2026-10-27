@@ -1,5 +1,6 @@
 //! The native command line: help and version on stdout with exit 0, a bad
 //! command line on stderr with exit 2 and never the whole usage.
+#![cfg(feature = "cli")]
 
 mod hermetic;
 

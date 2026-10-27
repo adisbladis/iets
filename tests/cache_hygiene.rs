@@ -2,6 +2,7 @@
 //! torn entry is ever read, a corrupt entry or store goes instead of being
 //! repaired, and the sweep removes only what the TTL says. Shapes follow
 //! nix-tarmac's tests/{concurrent,corrupt,gc}_test.cpp. See docs/explanation/caching.md.
+#![cfg(feature = "cli")]
 
 mod hermetic;
 

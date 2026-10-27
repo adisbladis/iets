@@ -1,5 +1,6 @@
 //! `iets help TOPIC` from outside the repository: the binary carries the
 //! reference pages, so no `docs/` directory has to be reachable.
+#![cfg(feature = "cli")]
 
 mod hermetic;
 

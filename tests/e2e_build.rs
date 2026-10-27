@@ -1,7 +1,7 @@
 //! `iets build` over an attribute tree, against the fixture's daemon. The
 //! flake has `checks` for two systems, `ok`, `dep`, `chain` (which reads
 //! `dep`) and `bad` (which exits 1), and a `packages` set.
-#![cfg(unix)]
+#![cfg(all(unix, feature = "cli"))]
 
 mod e2e;
 mod hermetic;

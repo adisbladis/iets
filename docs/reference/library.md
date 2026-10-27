@@ -18,6 +18,28 @@ objects), but every operation on them is `pub(crate)`. You take a `Word` from
 `api::value`. You can't build one, dereference one or allocate in the arena,
 because a word made up from bits would let a safe call read any address.
 
+## Features
+
+The default build has the command line and every transport. A host turns the
+defaults off and names what it uses:
+
+```toml
+iets = { version = "0.2", default-features = false, features = ["http"] }
+```
+
+| Feature | What it adds | Without it | What it compiles |
+|:---|:---|:---|:---|
+| `cli` | the `iets` binary and `iets::cli`, with mimalloc as its allocator; turns on `grpc` and `http` | no binary, and `IETS_STATS` prints no allocator statistics | mimalloc |
+| `grpc` | the `grpc://` store's client | the URL still parses, and opening the store fails with `unsupported` | tonic, prost, tokio and rustls; protox and tonic-prost-build at build time |
+| `http` | downloads over `http://` and `https://`: the fetch builtins, a flake's tarball inputs, `api::fetch::url_hash` | a download fails with `offline`, as under `IETS_OFFLINE`; `file://` still reads | hyper, tokio, tokio-rustls and rustls |
+| `stats2` | the memory census of `IETS_STATS=2` (`docs/reference/settings.md`) | | |
+
+`default` is `cli`. The worker protocol needs none of them: a host that
+evaluates, plans and uploads to a daemon over a Unix socket (`daemon`,
+`unix://`) or over `ssh-ng://`, through the `ssh` on `PATH`, builds with
+`default-features = false`. So do the input store and the archive formats,
+which a `file://` tarball reads.
+
 ## Entry points
 
 | What | Where |

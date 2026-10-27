@@ -9,6 +9,13 @@ to move. The host below is a daemon that keeps one session for each root
 it evaluates. `tests/embedding.rs` makes its calls through `iets::api`
 alone, and holds its own text to that.
 
+The host builds the library with `default-features = false`. `cli` is the
+command line, and nothing in `api` needs it; `grpc` and `http` are
+transports the host takes only if it uses them. The calls below need
+neither: the host uploads to a daemon over the worker protocol, and
+`tests/embedding.rs` runs in the build with no feature as in the default
+one (`docs/reference/library.md`, "Features").
+
 ## Item by item
 
 Each row is something the host does, and the names it does it with.

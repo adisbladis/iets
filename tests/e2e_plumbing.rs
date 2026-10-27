@@ -1,6 +1,6 @@
 //! `iets plumbing`, one test per op, against the JSON shape that
 //! docs/reference/plumbing.md specifies.
-#![cfg(unix)]
+#![cfg(all(unix, feature = "cli"))]
 
 mod e2e;
 mod hermetic;

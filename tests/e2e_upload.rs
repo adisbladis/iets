@@ -3,7 +3,7 @@
 //! with its references, beside the derivations of the same plan. One test,
 //! because the evaluation runs in this process and takes the daemon's store
 //! directory (`pin_store_dir`).
-#![cfg(unix)]
+#![cfg(all(unix, feature = "cli"))]
 
 mod e2e;
 mod hermetic;

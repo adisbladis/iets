@@ -112,7 +112,9 @@ Around it:
   and `nix flake prefetch-inputs` share. Parsing a flake reference stays
   in `flake/`, reading one `flake.lock` is `api::flake::info`, and reading
   bytes out of a tree goes through `treestore::StoredTree`.
-- `fetch/`: the HTTP client, the tarball spool and the unpack rules.
+- `fetch/`: the GET of a URL (`fetch::get`), the HTTP client behind it
+  (`http.rs`, the `http` feature), the tarball spool and the unpack
+  rules.
 - `treestore/`: the input store, where a fetched input lives.
 - `trace/`: the tracing evaluation cache.
 - `events.rs`: the `IETS_EVENTS` stream. A group that is off costs one
@@ -126,8 +128,8 @@ Around it:
   (`docs/explanation/lint-scope.md`). `site.rs` finds the byte span of a
   finding.
 - `remote/`: the store transports. `plan.rs` (the upload plan), `worker/`
-  (the Nix worker protocol), `grpc/` (nix-grpc-store), `copy.rs`,
-  `event.rs`.
+  (the Nix worker protocol), `grpc/` (nix-grpc-store; its client is the
+  `grpc` feature), `copy.rs`, `event.rs`.
 - `build/`: the dispatcher every build goes through, its two backends, the
   uploaders and the renderer.
 - `jobs/`: the eval-jobs walk.
@@ -150,7 +152,10 @@ Around it:
   `cli`, move it into `api` or the module it belongs to, and let `cli` call
   it there.
 - `main.rs` and `cli/`: the command line on top of `api`, including the
-  classic names in `cli/classic/`.
+  classic names in `cli/classic/`. Both are the `cli` feature, which the
+  default build has; a host builds the library without it
+  (`docs/reference/library.md`, "Features"), so a library module names
+  `cli` only in a test that needs the feature.
 
 ## Layering
 

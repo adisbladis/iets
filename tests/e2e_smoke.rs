@@ -1,5 +1,5 @@
 //! The `Store` fixture itself: iets and Nix build into the same private store.
-#![cfg(unix)]
+#![cfg(all(unix, feature = "cli"))]
 
 mod e2e;
 mod hermetic;
