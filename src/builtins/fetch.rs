@@ -13,8 +13,8 @@ use crate::lint::purity::{self, tree_level};
 use crate::lint::{Level, LintId};
 use crate::runtime::{AttrsObj, Ctx, Taint, Value, Word};
 use crate::source::{
-    self, AttrVal, Attrs, SourceRef, Tree, bool_attr, int_attr, last_modified_date, parse_nar_hash,
-    scm, str_attr, to_url,
+    self, AttrVal, Attrs, SourceRef, Tree, attrs_to_json, bool_attr, int_attr, last_modified_date,
+    parse_nar_hash, scm, str_attr, to_url,
 };
 use crate::store::hash::{Hash, HashAlgo};
 use crate::store::path::{IngestionMethod, check_name};
@@ -40,6 +40,17 @@ fn collect_attrs(ev: &mut Evaluator, w: Word, pos: Pos) -> EvalResult<Attrs> {
             ErrorKind::Eval,
             pos,
             "argument 'name' isn\u{2019}t supported in call to 'fetchTree'"
+        );
+    }
+    // refused before any check reads the hash
+    if let Some(v) = out.get("narHash")
+        && !matches!(v, AttrVal::Str(_))
+    {
+        bail!(
+            ErrorKind::Eval,
+            pos,
+            "input attribute 'narHash' is not a string {}",
+            attrs_to_json(&out)
         );
     }
     if !out.contains_key("type") {
@@ -129,10 +140,16 @@ fn check_locked(attrs: &Attrs, pos: Pos) -> EvalResult<()> {
     }
 }
 
-/// The NAR hash and the `lastModified` of a `path` input at the absolute `path`.
-pub(crate) fn path_nar_hash(ev: &mut Evaluator, path: &str, pos: Pos) -> EvalResult<(Hash, i64)> {
+/// The NAR hash and the `lastModified` of a `path` input at the absolute
+/// `path`, or `Err` with the hash of a tree that is not `expect`.
+pub(crate) fn path_nar_hash(
+    ev: &mut Evaluator,
+    path: &str,
+    expect: Option<&Hash>,
+    pos: Pos,
+) -> EvalResult<Result<(Hash, i64), Hash>> {
     Ok(match store_hooks::locate(ev, path.as_bytes()) {
-        None => source::path_tree(ev, &sys::path_from_internal(path.as_bytes()), pos)?,
+        None => source::path_tree(ev, &sys::path_from_internal(path.as_bytes()), expect, pos)?,
         // a store tree's mtimes are all 1, so that is its lastModified
         Some(_) => {
             let sp = paths::add_path(
@@ -146,7 +163,11 @@ pub(crate) fn path_nar_hash(ev: &mut Evaluator, path: &str, pos: Pos) -> EvalRes
                 None,
             )?;
             let nar = ev.known.origin(&sp).and_then(|o| o.nar);
-            (nar.expect("add_path records a recursive copy").0, 1)
+            let hash = nar.expect("add_path records a recursive copy").0;
+            match expect {
+                Some(e) if *e != hash => Err(hash),
+                _ => Ok((hash, 1)),
+            }
         }
     })
 }
@@ -175,11 +196,14 @@ pub fn fetch_tree(ev: &mut Evaluator, args: &[Word], pos: Pos) -> EvalResult<Wor
                     to_url(&attrs)
                 );
             }
-            let (hash, mtime) = path_nar_hash(ev, path, pos)?;
-            if let Some(expected) = str_attr(&attrs, "narHash") {
-                let exp = parse_nar_hash(expected)
-                    .map_err(|e| Error::boxed(ErrorKind::Eval, e.to_string(), pos))?;
-                if exp != hash {
+            let exp = str_attr(&attrs, "narHash")
+                .map(parse_nar_hash)
+                .transpose()
+                .map_err(|e| Error::boxed(ErrorKind::Eval, e.to_string(), pos))?;
+            let (hash, mtime) = match path_nar_hash(ev, path, exp.as_ref(), pos)? {
+                Ok(found) => found,
+                Err(hash) => {
+                    let exp = exp.expect("only a narHash mismatches");
                     let msg = format!(
                         "NAR hash mismatch in input '{}', expected '{}' but got '{}'",
                         to_url(&attrs),
@@ -197,7 +221,7 @@ pub fn fetch_tree(ev: &mut Evaluator, args: &[Word], pos: Pos) -> EvalResult<Wor
                     });
                     return Err(Error::hash_mismatch(msg, &hash, at, pos));
                 }
-            }
+            };
             attrs.insert("narHash".into(), AttrVal::Str(hash.to_sri()));
             attrs
                 .entry("lastModified".into())

@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::{result, slice, thread};
 
 use super::scm::{Commit, Entry};
-use super::{AttrVal, Attrs, Tree, parse_nar_hash, str_attr, to_url};
+use super::{AttrVal, Attrs, Tree, attrs_to_json, parse_nar_hash, str_attr, to_url};
 use crate::eval::{Error, ErrorKind, EvalResult, Evaluator, Pos, bail};
 use crate::fetch::http::{self, Limits};
 use crate::fetch::spool;
@@ -70,19 +70,6 @@ fn input_name(ev: &Evaluator, attrs: &Attrs) -> String {
     str_attr(attrs, "narHash")
         .and_then(|h| ev.input_names.get(h))
         .unwrap_or_else(|| to_url(attrs))
-}
-
-fn attrs_to_json(a: &Attrs) -> String {
-    let mut m = serde_json::Map::new();
-    for (k, v) in a {
-        let v = match v {
-            AttrVal::Str(s) => serde_json::Value::String(s.clone()),
-            AttrVal::Bool(b) => serde_json::Value::Bool(*b),
-            AttrVal::Int(n) => serde_json::Value::from(*n),
-        };
-        m.insert(k.clone(), v);
-    }
-    serde_json::Value::Object(m).to_string()
 }
 
 /// A Nix `"..."` literal holding `s`.

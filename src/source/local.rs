@@ -27,7 +27,7 @@ use crate::treestore;
 
 /// A directory copied whole, as a `path:` input.
 pub fn path_source(ev: &mut Evaluator, dir: &Path, pos: Pos) -> EvalResult<Tree> {
-    let (hash, mtime) = path_tree(ev, dir, pos)?;
+    let (hash, mtime) = path_tree(ev, dir, None, pos)?.expect("no hash to match");
     let mut attrs = Attrs::new();
     attrs.insert("type".into(), AttrVal::Str("path".into()));
     attrs.insert(
@@ -46,9 +46,14 @@ pub fn path_source(ev: &mut Evaluator, dir: &Path, pos: Pos) -> EvalResult<Tree>
     })
 }
 
-/// NAR hash of a whole directory and the newest `lstat` mtime in it, like
-/// `dumpPathAndGetMtime`.
-pub fn path_tree(ev: &mut Evaluator, dir: &Path, pos: Pos) -> EvalResult<(Hash, i64)> {
+/// NAR hash of a whole directory and the newest `lstat` mtime in it. A tree
+/// that is not `expect` is not made readable, and `Err` has its hash.
+pub fn path_tree(
+    ev: &mut Evaluator,
+    dir: &Path,
+    expect: Option<&Hash>,
+    pos: Pos,
+) -> EvalResult<Result<(Hash, i64), Hash>> {
     let io = |e: io::Error| {
         Error::boxed(
             ErrorKind::Io,
@@ -58,6 +63,9 @@ pub fn path_tree(ev: &mut Evaluator, dir: &Path, pos: Pos) -> EvalResult<(Hash, 
     };
     let mut fp = ev.trace().fp(dir);
     let (hash, nar_size, mtime) = dump_and_max_mtime(dir, &mut fp).map_err(io)?;
+    if expect.is_some_and(|e| *e != hash) {
+        return Ok(Err(hash));
+    }
     if names_its_content(dir, &hash) {
         ev.trace()
             .stat(dir.as_os_str().as_bytes(), false, trace::Kind::Directory);
@@ -71,7 +79,7 @@ pub fn path_tree(ev: &mut Evaluator, dir: &Path, pos: Pos) -> EvalResult<(Hash, 
         sp,
         SourceOrigin::tree(SrcPath::fs(dir, None), hash, nar_size),
     );
-    Ok((hash, mtime))
+    Ok(Ok((hash, mtime)))
 }
 
 /// A store path that is the fixed-output path of the tree just hashed: a

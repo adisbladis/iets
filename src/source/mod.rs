@@ -77,6 +77,20 @@ pub fn to_url(a: &Attrs) -> String {
     parts.join("&")
 }
 
+/// The attributes as JSON, for error messages.
+pub fn attrs_to_json(a: &Attrs) -> String {
+    let mut m = serde_json::Map::new();
+    for (k, v) in a {
+        let v = match v {
+            AttrVal::Str(s) => serde_json::Value::String(s.clone()),
+            AttrVal::Bool(b) => serde_json::Value::Bool(*b),
+            AttrVal::Int(n) => serde_json::Value::from(*n),
+        };
+        m.insert(k.clone(), v);
+    }
+    serde_json::Value::Object(m).to_string()
+}
+
 pub fn parse_nar_hash(s: &str) -> error::Result<Hash> {
     Hash::parse_any(s, Some(HashAlgo::Sha256)).map_err(Into::into)
 }
