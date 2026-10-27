@@ -226,6 +226,11 @@ A root can also be a store path that the evaluation made by a copy, such as
 valid in the store, with the paths it names
 ([Using iets as a library](../reference/library.md#make-a-copied-path-valid)).
 
+To withdraw an upload or a build when your request goes away, call
+`session.cancel.cancel()` from any thread. The waiting call returns
+`Error::Cancelled`, and the session takes no more store work
+([Using iets as a library](../reference/library.md#cancelling-store-work)).
+
 ## Read derivations
 
 `examples/drv_info.rs` lists every derivation a run created:

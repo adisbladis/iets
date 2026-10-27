@@ -52,7 +52,7 @@ dash means the code has no kind of its own.
 | `io` | `ErrorKind::Io`, `Error::Io` | a file that cannot be read or written |
 | `unsupported` | `ErrorKind::Unsupported`, `Error::Unsupported` | a feature iets does not have; classic mode falls back to Nix |
 | `offline` | `ErrorKind::Offline`, `Error::Offline` | a download that `IETS_OFFLINE` refused (`docs/reference/settings.md`); the message names the URL, and `tryEval` does not catch it |
-| `cancelled` | `ErrorKind::Cancelled` | a parallel helper was stopped; never reaches the user |
+| `cancelled` | `ErrorKind::Cancelled`, `Error::Cancelled` | a parallel helper was stopped, which never reaches the user; or a library host cancelled the session's work on a store (`docs/reference/library.md`, "Cancelling store work") |
 | `usage` | `Error::Usage` | a bad command line |
 | `config` | `Error::Config` | a bad `nix.conf` or iets setting |
 | `store` | `Error::Store` | a bad store path, derivation or hash |

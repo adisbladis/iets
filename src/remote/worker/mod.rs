@@ -4,12 +4,15 @@
 
 pub mod wire;
 
+use crate::session::{self, Armed, Cancel, Session};
 use crate::sys::fs::symlink;
 use crate::sys::net::UnixStream;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io::{self, BufReader, BufWriter, Read, Write};
+use std::net::Shutdown;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::{env, fs, mem, str, thread};
 
 use serde_json::Value;
@@ -413,7 +416,46 @@ pub fn percent_decode(s: &str) -> String {
 
 /// Every failure of the connection's own reads and writes reports the same way.
 fn conn(e: io::Error) -> Error {
+    if session::is_cancelled_io(&e) {
+        return Error::Cancelled;
+    }
     Error::io("daemon connection", e)
+}
+
+/// One direction of a connection the session's [`Cancel`] can shut: past a
+/// cancel, its end and its errors are the cancel's, which [`conn`] reports
+/// as `Error::Cancelled`.
+struct Cancellable<S> {
+    inner: S,
+    cancel: Cancel,
+}
+
+impl<S> Cancellable<S> {
+    fn past_cancel(&self, e: io::Error) -> io::Error {
+        match self.cancel.is_cancelled() {
+            true => session::cancelled_io(),
+            false => e,
+        }
+    }
+}
+
+impl<R: Read> Read for Cancellable<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self.inner.read(buf) {
+            Ok(0) if !buf.is_empty() && self.cancel.is_cancelled() => Err(session::cancelled_io()),
+            r => r.map_err(|e| self.past_cancel(e)),
+        }
+    }
+}
+
+impl<W: Write> Write for Cancellable<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.inner.write(buf).map_err(|e| self.past_cancel(e))
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush().map_err(|e| self.past_cancel(e))
+    }
 }
 
 fn write_u64(w: &mut dyn Write, n: u64) -> Result<()> {
@@ -487,7 +529,10 @@ impl BuildResult {
 pub struct Connection {
     to: BufWriter<Counting<Box<dyn Write + Send>>>,
     from: BufReader<Box<dyn Read + Send>>,
-    child: Option<Child>,
+    /// Shared with the session's cancel, which kills it.
+    child: Option<Arc<Mutex<Child>>>,
+    /// What the session's cancel shuts; given up when the connection drops.
+    _armed: Armed,
     pub minor: u64,
     pub daemon_nix_version: String,
     /// `Some(true)` when the daemon trusts us (protocol >= 1.35).
@@ -563,7 +608,7 @@ impl Drop for Connection {
             log::stop(id);
         }
         let _ = self.to.flush();
-        if let Some(mut c) = self.child.take() {
+        if let Some(c) = self.child.take() {
             let sink: Box<dyn Write + Send> = Box::new(io::sink());
             drop(mem::replace(
                 &mut self.to,
@@ -572,6 +617,7 @@ impl Drop for Connection {
                     bytes: 0,
                 }),
             ));
+            let mut c = c.lock().unwrap_or_else(|e| e.into_inner());
             let _ = c.kill();
             let _ = c.wait();
         }
@@ -584,13 +630,18 @@ impl Connection {
     }
 
     /// Opens the transport and runs the handshake and `SetOptions`, as
-    /// remote-store.cc:initConnection does.
+    /// remote-store.cc:initConnection does. The session this thread entered
+    /// can cancel the connection (`session::Cancel`).
     pub fn open_with(
         transport: &Transport,
         options: &Options,
         on_event: &mut dyn FnMut(Event),
     ) -> Result<Connection> {
-        let (to, from, child): (Box<dyn Write + Send>, Box<dyn Read + Send>, Option<Child>) =
+        let cancel = Session::current().cancel.clone();
+        if cancel.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
+        let (to, from, child, armed): (Box<dyn Write + Send>, Box<dyn Read + Send>, _, _) =
             match transport {
                 Transport::Grpc(cfg) => {
                     return Err(Error::Usage(format!(
@@ -603,7 +654,11 @@ impl Connection {
                         Error::io(format!("cannot connect to '{}'", path.display()), e)
                     })?;
                     let r = s.try_clone().map_err(conn)?;
-                    (Box::new(s), Box::new(r), None)
+                    let shut = s.try_clone().map_err(conn)?;
+                    let armed = cancel.arm(move || {
+                        let _ = shut.shutdown(Shutdown::Both);
+                    })?;
+                    (Box::new(s), Box::new(r), None, armed)
                 }
                 ssh @ Transport::Ssh { remote_program, .. } => {
                     let mut cmd = Command::new("ssh");
@@ -616,9 +671,28 @@ impl Connection {
                     let mut c = cmd.spawn().map_err(|e| Error::io("cannot run ssh", e))?;
                     let stdin = c.stdin.take().expect("piped");
                     let stdout = c.stdout.take().expect("piped");
-                    (Box::new(stdin), Box::new(stdout), Some(c))
+                    let c = Arc::new(Mutex::new(c));
+                    let child = c.clone();
+                    // a child that was waited for is not signalled again
+                    let kill = move || {
+                        let _ = child.lock().unwrap_or_else(|e| e.into_inner()).kill();
+                    };
+                    let armed = cancel.arm(kill).inspect_err(|_| {
+                        let mut c = c.lock().unwrap_or_else(|e| e.into_inner());
+                        let _ = c.kill();
+                        let _ = c.wait();
+                    })?;
+                    (Box::new(stdin), Box::new(stdout), Some(c), armed)
                 }
             };
+        let to: Box<dyn Write + Send> = Box::new(Cancellable {
+            inner: to,
+            cancel: cancel.clone(),
+        });
+        let from: Box<dyn Read + Send> = Box::new(Cancellable {
+            inner: from,
+            cancel,
+        });
         let mut conn = Connection {
             to: BufWriter::with_capacity(
                 1 << 20,
@@ -629,6 +703,7 @@ impl Connection {
             ),
             from: BufReader::with_capacity(1 << 20, from),
             child,
+            _armed: armed,
             minor: 0,
             daemon_nix_version: String::new(),
             trusted: None,
@@ -1339,5 +1414,113 @@ mod tests {
         assert_eq!(shell_split(r"a\ b  c").unwrap(), ["a b", "c"]);
         assert_eq!(shell_split("  ").unwrap(), Vec::<String>::new());
         assert!(shell_split("'a").is_err());
+    }
+
+    /// Where a stand-in daemon stops answering.
+    #[cfg(unix)]
+    #[derive(Clone, Copy, Debug)]
+    enum Stall {
+        Handshake,
+        FirstOp,
+    }
+
+    /// A daemon on `sock` that answers until `stall`, says so on the
+    /// channel, and then reads until its client goes.
+    #[cfg(unix)]
+    fn slow_daemon(sock: &Path, stall: Stall) -> std::sync::mpsc::Receiver<()> {
+        let listener = std::os::unix::net::UnixListener::bind(sock).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut serve = || -> io::Result<()> {
+                if let Stall::FirstOp = stall {
+                    wire::read_u64(&mut s)?; // magic
+                    wire::read_u64(&mut s)?; // the client's version
+                    wire::write_u64(&mut s, WORKER_MAGIC_2)?;
+                    wire::write_u64(&mut s, (1 << 8) | LATEST_MINOR)?;
+                    wire::read_strs(&mut s)?;
+                    wire::write_strs::<&str>(&mut s, &[])?;
+                    wire::read_u64(&mut s)?;
+                    wire::read_u64(&mut s)?;
+                    wire::write_str(&mut s, b"2.34.8")?;
+                    wire::write_u64(&mut s, 1)?; // trusted
+                    wire::write_u64(&mut s, STDERR_LAST)?;
+                    // SetOptions: the op, its twelve fields and no overrides
+                    for _ in 0..14 {
+                        wire::read_u64(&mut s)?;
+                    }
+                    wire::write_u64(&mut s, STDERR_LAST)?;
+                    wire::read_u64(&mut s)?; // the upload's first op
+                }
+                let _ = tx.send(());
+                io::copy(&mut s, &mut io::sink()).map(drop)
+            };
+            let _ = serve();
+        });
+        rx
+    }
+
+    /// The session's cancel ends an upload that waits on a daemon, wherever
+    /// it waits, and refuses the session's next connection.
+    #[cfg(unix)]
+    #[rstest]
+    #[case::handshake(Stall::Handshake)]
+    #[case::upload(Stall::FirstOp)]
+    fn a_cancel_withdraws_an_upload_from_a_slow_daemon(#[case] stall: Stall) {
+        use crate::api::build::{self, Dispatch};
+        use crate::build::render::{Mode, Style};
+        use crate::provenance::Provenance;
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("socket");
+        let reached = slow_daemon(&sock, stall);
+        let mut ev = crate::eval::Evaluator::new();
+        let expr =
+            r#"(derivation { name = "x"; system = "x86_64-linux"; builder = "/bin/sh"; }).drvPath"#;
+        let w = ev
+            .eval_string(expr, b"/")
+            .and_then(|w| ev.force(w))
+            .unwrap();
+        let text = str::from_utf8(w.as_string().unwrap().bytes).unwrap();
+        let drv = StorePath::parse(text).unwrap();
+        let plan = build::plan(&ev, std::slice::from_ref(&drv)).unwrap();
+
+        let session = Session::with_env(crate::env::Env::isolated());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let s = session.clone();
+        thread::spawn(move || {
+            let _entered = s.enter();
+            let style = Style {
+                mode: Mode::Ci,
+                color: false,
+                fold: false,
+                quiet: true,
+            };
+            let transport = Transport::Unix(sock);
+            let upload = Dispatch::open(
+                &transport,
+                &Options::default(),
+                plan,
+                Provenance::off(),
+                style,
+            )
+            .and_then(|mut d| d.upload_only(&[drv]));
+            let _ = tx.send(upload);
+        });
+        let wait = Duration::from_secs(60);
+        reached.recv_timeout(wait).expect("the daemon was reached");
+        session.cancel.cancel();
+        let upload = rx
+            .recv_timeout(wait)
+            .expect("the upload ends at the cancel");
+        assert!(
+            matches!(upload, Err(Error::Cancelled)),
+            "{stall:?}: {upload:?}"
+        );
+
+        let _entered = session.enter();
+        let again = Connection::open(&Transport::Unix(dir.path().join("x")), &mut |_| {});
+        assert!(matches!(again, Err(Error::Cancelled)));
     }
 }
