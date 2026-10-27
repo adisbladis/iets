@@ -34,7 +34,7 @@ use super::super::worker::Connection;
 use super::super::worker::wire::{write_object, write_u64};
 use super::drvwire::{BUILD_PROTOCOL, BuildResult, PathInfo, write_basic_derivation};
 use super::sched::{Answer, Sched};
-use super::{Client, Headers, c_request, first_line, gone_away, proto};
+use super::{Client, Headers, c_request, cancelled, first_line, gone_away, proto};
 
 /// The shared timings, and what only this transport counts.
 #[derive(Debug, Default, Clone)]
@@ -238,7 +238,6 @@ fn upload(
 ) -> result::Result<u64, tonic::Status> {
     let (tx, rx) = tokio::sync::mpsc::channel::<proto::AddMultipleChunk>(4);
     let mut stub = c.stub.clone();
-    let rt = &c.rt;
     let n = objects.len();
     plan::prehash_drvs(objects);
     let sent = Arc::new(AtomicU64::new(0));
@@ -269,10 +268,13 @@ fn upload(
             }))
         };
         drop(tx);
-        let reply = rt.block_on(async {
-            stub.add_multiple_to_store(c_request(ReceiverStream::new(rx), headers))
-                .await
-        });
+        // a stopped call drops the stream, so the producer's next send fails
+        let reply = c
+            .block(async {
+                stub.add_multiple_to_store(c_request(ReceiverStream::new(rx), headers))
+                    .await
+            })
+            .unwrap_or_else(|| Err(cancelled()));
         let written = producer.join().map_err(|_| {
             tonic::Status::internal("the AddMultipleToStore producer thread panicked")
         })?;
@@ -511,12 +513,17 @@ fn try_build_derivation(
 ) -> result::Result<BuildResult, tonic::Status> {
     let mut stub = c.stub.clone();
     let req = c_request(req.clone(), headers);
-    let mut stream =
-        c.rt.block_on(async { stub.build_derivation(req).await })?
-            .into_inner();
+    let mut stream = c
+        .block(async { stub.build_derivation(req).await })
+        .unwrap_or_else(|| Err(cancelled()))?
+        .into_inner();
     let drv = drv_path.to_string();
     let mut res: Option<BuildResult> = None;
-    while let Some(msg) = c.rt.block_on(stream.next()).transpose()? {
+    while let Some(msg) = c
+        .block(stream.next())
+        .unwrap_or_else(|| Some(Err(cancelled())))
+        .transpose()?
+    {
         match msg.event {
             Some(proto::build_derivation_chunk::Event::LogLine(line)) => {
                 let l = String::from_utf8_lossy(&line);
@@ -612,13 +619,14 @@ fn upload_closure(
             .collect(),
         substitute: false,
     };
-    let valid: HashSet<String> =
-        c.rt.block_on(async { stub.query_valid_paths(c_request(req, headers)).await })
-            .map_err(|s| c.status_error(&s, "QueryValidPaths"))?
-            .into_inner()
-            .paths
-            .into_iter()
-            .collect();
+    let valid: HashSet<String> = c
+        .block(async { stub.query_valid_paths(c_request(req, headers)).await })
+        .unwrap_or_else(|| Err(cancelled()))
+        .map_err(|s| c.status_error(&s, "QueryValidPaths"))?
+        .into_inner()
+        .paths
+        .into_iter()
+        .collect();
     let missing: Vec<&Object> = closure
         .into_iter()
         .filter(|o| !valid.contains(o.store_path().base_name()))
@@ -663,15 +671,17 @@ fn fetch_nars(c: &Client, paths: &[StorePath], on_frame: OnFrame<'_>) -> Result<
     let req = proto::FetchNarsRequest {
         paths: paths.iter().map(|p| p.base_name().to_string()).collect(),
     };
-    let mut stream =
-        c.rt.block_on(async { stub.fetch_nars(c_request(req, &headers)).await })
-            .map_err(|s| c.status_error(&s, "FetchNars"))?
-            .into_inner();
+    let mut stream = c
+        .block(async { stub.fetch_nars(c_request(req, &headers)).await })
+        .unwrap_or_else(|| Err(cancelled()))
+        .map_err(|s| c.status_error(&s, "FetchNars"))?
+        .into_inner();
     let mut dec = NarDecoder::new().map_err(|e| Error::io("zstd", e))?;
-    while let Some(frame) =
-        c.rt.block_on(stream.next())
-            .transpose()
-            .map_err(|s| c.status_error(&s, "FetchNars"))?
+    while let Some(frame) = c
+        .block(stream.next())
+        .unwrap_or_else(|| Some(Err(cancelled())))
+        .transpose()
+        .map_err(|s| c.status_error(&s, "FetchNars"))?
     {
         let i = frame.path_index as usize;
         if i >= paths.len() {

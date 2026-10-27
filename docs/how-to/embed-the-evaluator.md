@@ -27,8 +27,10 @@ let _entered = session.enter();         // for this thread
 let mut ev = iets::eval::Evaluator::new();   // adopts the session
 ```
 
-The library never writes to stdout or stderr on its own, and never exits.
-It returns errors and your program picks the exit code. A thread you start
+The library never writes to stdout or stderr on its own. It returns errors
+and your program picks the exit code, even when a session runs out of
+memory ([Using iets as a library](../reference/library.md#running-out-of-memory)
+has the limits). A thread you start
 yourself needs `Session::enter` or `session::bind(f)`
 ([Using iets as a library](../reference/library.md#what-the-host-owns)).
 
@@ -225,6 +227,11 @@ A root can also be a store path that the evaluation made by a copy, such as
 `"${./src}"` or a `builtins.toFile` text. `plan` and `upload_only` make it
 valid in the store, with the paths it names
 ([Using iets as a library](../reference/library.md#make-a-copied-path-valid)).
+
+To withdraw an upload or a build when your request goes away, call
+`session.cancel.cancel()` from any thread. The waiting call returns
+`Error::Cancelled`, and the session takes no more store work
+([Using iets as a library](../reference/library.md#cancelling-store-work)).
 
 ## Read derivations
 

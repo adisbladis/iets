@@ -5,15 +5,16 @@
 //! An `Evaluator` keeps a handle to the session it was made in, so the hot
 //! paths read a field. Code with no evaluator at hand — the command line,
 //! a fetch, a build — uses [`Session::current`], the session this thread
-//! entered. A thread the library starts inherits it through
-//! [`bind`]. docs/reference/library.md says what a host owns.
+//! entered; the library's entry points that take an evaluator enter its
+//! session first (`Evaluator::enter`). A thread the library starts inherits
+//! it through [`bind`]. docs/reference/library.md says what a host owns.
 
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
-use std::panic;
-use std::process;
+use std::error::Error as StdError;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::{fmt, io, mem, panic, process};
 
 use crate::env::Env;
 use crate::events::Events;
@@ -60,6 +61,8 @@ pub struct Session {
     pub heap: Arc<Heap>,
     /// The cache of `store::locate::references_of`.
     pub(crate) store_refs: Mutex<HashMap<String, BTreeSet<StorePath>>>,
+    /// Withdraws this session's work on a store (docs/reference/library.md).
+    pub cancel: Cancel,
 }
 
 thread_local! {
@@ -86,6 +89,8 @@ impl Session {
     }
 
     /// The session this thread entered, else the fallback one.
+    // never inlined: a fiber that migrates must not reuse another thread's slot
+    #[inline(never)]
     pub fn current() -> Arc<Session> {
         CURRENT
             .with(|c| c.borrow().clone())
@@ -93,15 +98,17 @@ impl Session {
     }
 
     /// Makes `self` this thread's session until the guard drops.
+    #[inline(never)]
     pub fn enter(self: &Arc<Session>) -> Entered {
         let prev = CURRENT.with(|c| c.borrow_mut().replace(self.clone()));
         Entered(prev)
     }
 
-    /// This session's settings: the environment knobs alone until
+    /// This session's settings, read from its own environment whichever
+    /// session the thread entered: the environment knobs alone until
     /// [`Session::load_settings`] reads the files (docs/reference/settings.md).
     pub fn settings(&self) -> &Settings {
-        self.settings.get_or_init(Settings::default)
+        self.settings.get_or_init(|| Settings::of_env(&self.env))
     }
 
     /// The environment settings with `IETS_STATS` at `level`, for a test that
@@ -110,18 +117,113 @@ impl Session {
     pub(crate) fn set_stats_for_test(&self, level: u8) {
         let s = Settings {
             stats: level,
-            ..Settings::default()
+            ..Settings::of_env(&self.env)
         };
         let _ = self.settings.set(s);
     }
 
-    /// Reads the `iets.toml` settings files and applies the `--iets-option` pairs.
-    /// Call it once, on an entered session, before anything reads a setting.
+    /// Reads the `iets.toml` settings files and applies the `--iets-option`
+    /// pairs. Call it once, before anything reads a setting.
     pub fn load_settings(&self, options: &[(String, String)]) -> error::Result<()> {
-        let s = Settings::load(options)?;
+        let s = Settings::load(&self.env, options)?;
         let _ = self.settings.set(s);
         Ok(())
     }
+
+    /// nix.conf as this session's environment names it, read on first use
+    /// unless the command line loaded it already.
+    pub fn nix_conf(&self) -> &config::Config {
+        self.nix_conf.get_or_init(|| {
+            config::Config::read_in(&self.env, &[]).unwrap_or_else(|_| config::Config::empty())
+        })
+    }
+}
+
+/// A host's withdrawal of a session's work on a store. Once cancelled, an
+/// upload, a build or a query in flight fails with `Error::Cancelled` as soon
+/// as its connection is shut, and every later one fails at once. A clone
+/// cancels the same session.
+#[derive(Clone, Default)]
+pub struct Cancel(Arc<Mutex<Aborts>>);
+
+#[derive(Default)]
+struct Aborts {
+    cancelled: bool,
+    next: u64,
+    /// What shuts each open connection: a socket, an ssh child, a gRPC call.
+    armed: Vec<(u64, Box<dyn FnOnce() + Send>)>,
+}
+
+impl Cancel {
+    /// Shuts every connection the session has open to a store and refuses
+    /// new ones. Any thread may call it, any number of times.
+    pub fn cancel(&self) {
+        let armed = {
+            let mut a = self.lock();
+            a.cancelled = true;
+            mem::take(&mut a.armed)
+        };
+        // outside the lock, so a connection that drops meanwhile does not wait
+        for (_, abort) in armed {
+            abort();
+        }
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.lock().cancelled
+    }
+
+    /// Runs `abort` on a cancel while the guard lives; `Error::Cancelled`
+    /// when the session is cancelled already.
+    pub(crate) fn arm(&self, abort: impl FnOnce() + Send + 'static) -> error::Result<Armed> {
+        let mut a = self.lock();
+        if a.cancelled {
+            return Err(error::Error::Cancelled);
+        }
+        let id = a.next;
+        a.next += 1;
+        a.armed.push((id, Box::new(abort)));
+        Ok(Armed {
+            cancel: self.clone(),
+            id,
+        })
+    }
+
+    fn lock(&self) -> MutexGuard<'_, Aborts> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+/// A connection's place in its session's [`Cancel`], given up on drop.
+pub(crate) struct Armed {
+    cancel: Cancel,
+    id: u64,
+}
+
+impl Drop for Armed {
+    fn drop(&mut self) {
+        self.cancel.lock().armed.retain(|(id, _)| *id != self.id);
+    }
+}
+
+/// The I/O error of a connection past a cancel (`is_cancelled_io`).
+#[derive(Debug)]
+struct Cancelled;
+
+impl fmt::Display for Cancelled {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("cancelled")
+    }
+}
+
+impl StdError for Cancelled {}
+
+pub(crate) fn cancelled_io() -> io::Error {
+    io::Error::other(Cancelled)
+}
+
+pub(crate) fn is_cancelled_io(e: &io::Error) -> bool {
+    e.get_ref().is_some_and(|inner| inner.is::<Cancelled>())
 }
 
 pub struct Exit(pub i32);
@@ -138,6 +240,7 @@ pub fn exit(code: i32) -> ! {
 pub struct Entered(Option<Arc<Session>>);
 
 impl Drop for Entered {
+    #[inline(never)]
     fn drop(&mut self) {
         CURRENT.with(|c| *c.borrow_mut() = self.0.take());
     }
@@ -158,8 +261,10 @@ mod tests {
 
     use crate::api::{self, EvalArgs, Input};
     use crate::eval::{ErrorKind, EvalConfig, Evaluator, Pos};
+    use crate::parallel::interner::SOFT_SYMS;
     use crate::runtime::Word;
-    use crate::runtime::heap::{MemoryGroup, MemoryHost, Release, is_released};
+    use crate::runtime::heap::{self, Exhausted, MemoryGroup, MemoryHost, Release, is_released};
+    use crate::sink::Sink;
     use crate::{parallel, print};
     use std::env;
     use std::process::{self, Command};
@@ -185,6 +290,64 @@ mod tests {
         }
         let _entered = a.enter();
         assert_eq!(crate::log::take_mismatches().len(), 1);
+    }
+
+    /// A session with `IETS_OFFLINE` set or not, `connect-timeout` in its
+    /// nix.conf, and a log of its own.
+    fn session_with(dir: &std::path::Path, offline: bool, timeout: u64) -> (Arc<Session>, Sink) {
+        let conf = format!("store = unix:///nonexistent/socket\nconnect-timeout = {timeout}");
+        let mut env = Env::isolated().with([
+            (
+                "IETS_CACHE_DIR",
+                dir.join(timeout.to_string()).into_os_string(),
+            ),
+            ("NIX_CONFIG", conf.into()),
+        ]);
+        if offline {
+            env = env.with([("IETS_OFFLINE", "1")]);
+        }
+        let s = Session::with_env(env);
+        let log = Sink::default();
+        s.log.write_to(Box::new(log.clone()));
+        (s, log)
+    }
+
+    /// Two sessions used from one thread that entered a third: each reads its
+    /// own settings, nix.conf and log, and so do its evaluators.
+    #[test]
+    fn an_evaluator_reads_its_own_session_wherever_the_thread_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("f");
+        std::fs::write(&file, "hello\n").unwrap();
+        let (a, a_log) = session_with(dir.path(), true, 7);
+        let (b, b_log) = session_with(dir.path(), false, 9);
+        let (third, third_log) = session_with(dir.path(), false, 11);
+        let _entered = third.enter();
+
+        assert!(a.settings().offline && !b.settings().offline);
+        let timeout = |s: &Session| s.nix_conf().int("connect-timeout").unwrap();
+        assert_eq!((timeout(&a), timeout(&b)), (Some(7), Some(9)));
+
+        let fetch = |name: &str| {
+            let url = format!("file://{}", file.display());
+            let hash = "sha256-WJG1tSLV3whtD/CxEPvZ0hu0/HFjrzTQgoai6Eb2vgM=";
+            format!(
+                r#"builtins.trace "in {name}" (builtins.fetchurl {{ url = "{url}"; sha256 = "{hash}"; }})"#
+            )
+        };
+        let (mut ev_a, mut ev_b) = (
+            EvalConfig::new().session(a.clone()).build(),
+            EvalConfig::new().session(b.clone()).build(),
+        );
+        let refused = evaluate(&mut ev_a, &fetch("a")).err();
+        assert_eq!(refused, Some(ErrorKind::Offline));
+        let got = evaluate(&mut ev_b, &fetch("b")).expect("b is not offline");
+        assert!(json(&mut ev_b, got).ends_with("-f\""));
+        assert!(a_log.text().contains("trace: in a"), "{}", a_log.text());
+        assert!(b_log.text().contains("trace: in b"), "{}", b_log.text());
+        assert_eq!(third_log.text(), "");
+        // each input store is under its own session's cache directory
+        assert!(dir.path().join("9").exists() && !dir.path().join("11").exists());
     }
 
     fn eval_in(s: &Arc<Session>, expr: &str) -> (Evaluator, Word) {
@@ -316,6 +479,41 @@ mod tests {
         })
         .expect("runs");
         assert_eq!(kind, Some(ErrorKind::Budget));
+    }
+
+    /// A mapping that fails after the host's release exhausts the session:
+    /// its evaluation fails at its next call, its next evaluation fails at
+    /// once, and the process and a new session go on.
+    #[test]
+    fn a_session_out_of_memory_fails_and_the_process_goes_on() {
+        let _reserve = heap::tests::spending_the_reserve();
+        let s = Session::new();
+        let mut ev = EvalConfig::new().session(s.clone()).build();
+        // each step copies the list and is a call
+        let grow = "builtins.length (builtins.foldl' (acc: i: acc ++ [ i ]) [ ] (builtins.genList (x: x) 20000))";
+        heap::tests::FAIL_MAPS.with(|f| f.set(2));
+        assert_eq!(evaluate(&mut ev, grow).err(), Some(ErrorKind::Exhausted));
+        assert_eq!(s.heap.exhausted(), Some(Exhausted::Memory));
+        let next = evaluate(&mut ev, "(x: x + 1) 1").err();
+        assert_eq!(next, Some(ErrorKind::Exhausted));
+        drop(ev);
+        drop(s);
+        let (mut ev, w) = eval_in(&Session::new(), "(x: x + 1) 1");
+        assert_eq!(json(&mut ev, w), "2");
+    }
+
+    /// Past `SOFT_SYMS` names the session is exhausted, and its next
+    /// evaluation fails at its first call.
+    #[test]
+    fn a_session_past_the_symbol_limit_fails() {
+        let s = Session::new();
+        let mut ev = EvalConfig::new().session(s.clone()).build();
+        ev.interner.skip_to_for_test(SOFT_SYMS - 3);
+        let names = r#"builtins.attrNames (builtins.listToAttrs (map (i: { name = "n${toString i}"; value = i; }) (builtins.genList (x: x) 10)))"#;
+        let _ = evaluate(&mut ev, names);
+        assert_eq!(s.heap.exhausted(), Some(Exhausted::Symbols));
+        let next = evaluate(&mut ev, "(x: x + 1) 1").err();
+        assert_eq!(next, Some(ErrorKind::Exhausted));
     }
 
     #[test]

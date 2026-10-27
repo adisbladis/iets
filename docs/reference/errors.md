@@ -40,6 +40,7 @@ dash means the code has no kind of its own.
 | `infinite-recursion` | `ErrorKind::InfiniteRecursion` | a value that depends on itself |
 | `stack-overflow` | `ErrorKind::StackOverflow` | the evaluator ran out of stack |
 | `budget` | `ErrorKind::Budget` | the memory host of the session's group refused more memory (`docs/reference/library.md`, "Bounding memory"); `tryEval` does not catch it |
+| `exhausted` | `ErrorKind::Exhausted` | the session ran out of memory or of symbols, and every later evaluation in it fails the same way (`docs/reference/library.md`, "Running out of memory"); `tryEval` does not catch it |
 | `parse` | `ErrorKind::Parse` | a syntax error |
 | `lint` | `ErrorKind::Lint` | a lint at level `error`; at `warn`, a level-1 record |
 | `hash-mismatch` | `ErrorKind::HashMismatch`, build status | a fetched tree or a fixed-output build whose hash is not the one given |
@@ -51,7 +52,8 @@ dash means the code has no kind of its own.
 | `cache-invalidated` | — | a level-3 record: what changed under a tracing cache entry, so the run evaluates again |
 | `io` | `ErrorKind::Io`, `Error::Io` | a file that cannot be read or written |
 | `unsupported` | `ErrorKind::Unsupported`, `Error::Unsupported` | a feature iets does not have; classic mode falls back to Nix |
-| `cancelled` | `ErrorKind::Cancelled` | a parallel helper was stopped; never reaches the user |
+| `offline` | `ErrorKind::Offline`, `Error::Offline` | a download that `IETS_OFFLINE` refused (`docs/reference/settings.md`); the message names the URL, and `tryEval` does not catch it |
+| `cancelled` | `ErrorKind::Cancelled`, `Error::Cancelled` | a parallel helper was stopped, which never reaches the user; or a library host cancelled the session's work on a store (`docs/reference/library.md`, "Cancelling store work") |
 | `usage` | `Error::Usage` | a bad command line |
 | `config` | `Error::Config` | a bad `nix.conf` or iets setting |
 | `store` | `Error::Store` | a bad store path, derivation or hash |

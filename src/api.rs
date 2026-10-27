@@ -188,6 +188,7 @@ pub fn flake_ref(f: &str, cwd: &[u8]) -> error::Result<flake::FlakeRef> {
 /// the store paths inside the messages name the local file the source was
 /// copied from, when one is known (docs/explanation/provenance.md).
 pub fn report_of(ev: &Evaluator, e: &Error) -> log::Report {
+    let _entered = ev.session().enter();
     let at = |pos: Pos| describe_pos(ev, pos).unwrap_or_else(|| ev.describe_pos(pos));
     ev.lints.flush();
     // a lint message resolves its own paths (lint::Evaluator::lint_shown_path)
@@ -207,6 +208,7 @@ pub fn report_of(ev: &Evaluator, e: &Error) -> log::Report {
 
 /// The same report, sent to the session's log, with the exit code.
 pub fn report(ev: &Evaluator, e: &Error) -> i32 {
+    let _entered = ev.session().enter();
     report_of(ev, e).emit()
 }
 
@@ -274,6 +276,7 @@ pub fn evaluate_with(
     a: EvalArgs,
     loaded: &mut Loaded,
 ) -> Result<Word, Box<Error>> {
+    let _entered = ev.enter();
     let (root, args) = input_and_args(ev, &a, loaded)?;
     select(ev, root, a.attr.as_deref(), args, !a.args.is_empty())
 }
@@ -285,6 +288,7 @@ pub fn evaluate_each(
     a: &EvalArgs,
     mut each: impl FnMut(&mut Evaluator, Word) -> Result<(), Box<Error>>,
 ) -> Result<(), Box<Error>> {
+    let _entered = ev.enter();
     let (root, args) = input_and_args(ev, a, &mut Loaded::default())?;
     let has_args = !a.args.is_empty();
     if a.attrs.is_empty() {
@@ -368,6 +372,7 @@ pub fn auto_args(
     args: &[(String, ArgKind)],
     cwd: &[u8],
 ) -> Result<Word, Box<Error>> {
+    let _entered = ev.enter();
     let mut entries = Vec::new();
     // common-eval-args.cc keeps autoArgs in a map and insert_or_assign's into
     // it, so the last `--arg`/`--argstr` of a name is the one that is used

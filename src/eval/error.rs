@@ -1,3 +1,4 @@
+use crate::runtime::heap::Exhausted;
 use crate::store::hash::Hash;
 use std::fmt;
 
@@ -45,6 +46,12 @@ pub enum ErrorKind {
     /// The session's `MemoryHost` refused more memory. Never caught by
     /// `tryEval`.
     Budget,
+    /// A download that `IETS_OFFLINE` refused. Never caught by `tryEval`.
+    Offline,
+    /// The session ran out of memory or of symbols, and every evaluation
+    /// in it fails this way from its next call on: release it
+    /// (`runtime::heap::Exhausted`). Never caught by `tryEval`.
+    Exhausted,
 }
 
 impl ErrorKind {
@@ -67,6 +74,8 @@ impl ErrorKind {
             ErrorKind::Lint => "lint",
             ErrorKind::HashMismatch => "hash-mismatch",
             ErrorKind::Budget => "budget",
+            ErrorKind::Offline => "offline",
+            ErrorKind::Exhausted => "exhausted",
         }
     }
 }
@@ -118,6 +127,15 @@ impl Error {
     /// The memory host refused the chunk this evaluation asked for.
     pub fn budget(pos: Pos) -> Box<Error> {
         Error::boxed(ErrorKind::Budget, "memory budget exceeded", pos)
+    }
+
+    /// The session can go no further, for `why`.
+    pub fn exhausted(why: Exhausted, pos: Pos) -> Box<Error> {
+        let msg = match why {
+            Exhausted::Memory => "out of memory",
+            Exhausted::Symbols => "too many symbols",
+        };
+        Error::boxed(ErrorKind::Exhausted, msg, pos)
     }
 
     /// A tree that hashes to `got`, not to what the call or the lock named;
