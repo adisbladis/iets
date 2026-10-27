@@ -45,6 +45,7 @@ because a word made up from bits would let a safe call read any address.
 | Where the builds go | `api::build::transport(flag, &api::build::config())` |
 | Build | `api::build::Dispatch::open(&transport, &options, plan, prov, style)`, then `submit`, `upload_only`, `missing` or `realise`; `overrides(map)` for `--source STOREPATH=LOCAL` |
 | One output path per root | `Dispatch::realise(roots, &name)` then `Built::paths(roots)`; `api::build::Root { drv, output }` |
+| Withdraw an upload or a build in flight | `Session::cancel`: `cancel()`, `is_cancelled()` ("Cancelling store work") |
 | Hash a URL, or a fixed-output derivation | `api::fetch::url_hash(url, unpack, algo)`, `api::fetch::drv_hash(ev, root)` |
 | Evaluation cache | `Run::cached(&args, subcommand)`, `Run::hit`, `trace::run::Cache`; `Cache::entry_path()` names the entry a run reads |
 | What to watch for an answer to go stale | `api::watch::watch_paths(entry)` over an entry path, giving `Watched { path, kind }` capped at `api::watch::MAX` |
@@ -100,6 +101,30 @@ started them. For your own threads, call `Session::enter` on each, or use
 `session::bind(f)`. A thread that entered no session uses a fallback session
 that writes nowhere. `docs/how-to/embed-the-evaluator.md` has the steps with
 code.
+
+### Cancelling store work
+
+`session.cancel.cancel()` withdraws the session's work on a store, from any
+thread: every connection the session opened to a daemon, an ssh store or a
+`grpc://` store is shut, and the upload, build or query waiting on it returns
+`Error::Cancelled`. A `Dispatch` or a `remote::worker::Connection` belongs to
+the session the thread had entered when it was opened. Cancelling is final:
+the session's next connection fails at once with `Error::Cancelled`, so make a
+new session for the next request.
+
+```rust
+let session = Session::new();
+let cancel = session.cancel.clone();     // keep it where the request ends
+std::thread::spawn(move || {
+    let _entered = session.enter();
+    let mut d = api::build::Dispatch::open(&transport, &options, plan, prov, style)?;
+    d.upload_only(&roots)                // Err(Error::Cancelled) once cancelled
+});
+cancel.cancel();
+```
+
+The cancel stops no evaluation and no download. An evaluation in the session
+loses its connection to the eval store and goes on as it does with no daemon.
 
 ## Sessions and memory
 

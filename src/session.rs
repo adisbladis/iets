@@ -11,10 +11,10 @@
 
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
-use std::panic;
-use std::process;
+use std::error::Error as StdError;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::{fmt, io, mem, panic, process};
 
 use crate::env::Env;
 use crate::events::Events;
@@ -61,6 +61,8 @@ pub struct Session {
     pub heap: Arc<Heap>,
     /// The cache of `store::locate::references_of`.
     pub(crate) store_refs: Mutex<HashMap<String, BTreeSet<StorePath>>>,
+    /// Withdraws this session's work on a store (docs/reference/library.md).
+    pub cancel: Cancel,
 }
 
 thread_local! {
@@ -135,6 +137,93 @@ impl Session {
             config::Config::read_in(&self.env, &[]).unwrap_or_else(|_| config::Config::empty())
         })
     }
+}
+
+/// A host's withdrawal of a session's work on a store. Once cancelled, an
+/// upload, a build or a query in flight fails with `Error::Cancelled` as soon
+/// as its connection is shut, and every later one fails at once. A clone
+/// cancels the same session.
+#[derive(Clone, Default)]
+pub struct Cancel(Arc<Mutex<Aborts>>);
+
+#[derive(Default)]
+struct Aborts {
+    cancelled: bool,
+    next: u64,
+    /// What shuts each open connection: a socket, an ssh child, a gRPC call.
+    armed: Vec<(u64, Box<dyn FnOnce() + Send>)>,
+}
+
+impl Cancel {
+    /// Shuts every connection the session has open to a store and refuses
+    /// new ones. Any thread may call it, any number of times.
+    pub fn cancel(&self) {
+        let armed = {
+            let mut a = self.lock();
+            a.cancelled = true;
+            mem::take(&mut a.armed)
+        };
+        // outside the lock, so a connection that drops meanwhile does not wait
+        for (_, abort) in armed {
+            abort();
+        }
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.lock().cancelled
+    }
+
+    /// Runs `abort` on a cancel while the guard lives; `Error::Cancelled`
+    /// when the session is cancelled already.
+    pub(crate) fn arm(&self, abort: impl FnOnce() + Send + 'static) -> error::Result<Armed> {
+        let mut a = self.lock();
+        if a.cancelled {
+            return Err(error::Error::Cancelled);
+        }
+        let id = a.next;
+        a.next += 1;
+        a.armed.push((id, Box::new(abort)));
+        Ok(Armed {
+            cancel: self.clone(),
+            id,
+        })
+    }
+
+    fn lock(&self) -> MutexGuard<'_, Aborts> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+/// A connection's place in its session's [`Cancel`], given up on drop.
+pub(crate) struct Armed {
+    cancel: Cancel,
+    id: u64,
+}
+
+impl Drop for Armed {
+    fn drop(&mut self) {
+        self.cancel.lock().armed.retain(|(id, _)| *id != self.id);
+    }
+}
+
+/// The I/O error of a connection past a cancel (`is_cancelled_io`).
+#[derive(Debug)]
+struct Cancelled;
+
+impl fmt::Display for Cancelled {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("cancelled")
+    }
+}
+
+impl StdError for Cancelled {}
+
+pub(crate) fn cancelled_io() -> io::Error {
+    io::Error::other(Cancelled)
+}
+
+pub(crate) fn is_cancelled_io(e: &io::Error) -> bool {
+    e.get_ref().is_some_and(|inner| inner.is::<Cancelled>())
 }
 
 pub struct Exit(pub i32);
