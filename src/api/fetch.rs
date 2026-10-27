@@ -11,8 +11,8 @@ use crate::build::{Dispatcher, Reporter, Target, backend};
 use crate::builtins::derivation::DrvInfo;
 use crate::error::{Error, Result};
 use crate::eval::Evaluator;
-use crate::fetch::http::{self, Limits};
 use crate::fetch::spool::{self, Tree};
+use crate::fetch::{self, Limits};
 use crate::provenance::Provenance;
 use crate::remote::worker;
 use crate::store::drv::{Derivation, DerivationOutput};
@@ -28,11 +28,11 @@ pub fn url_hash(url: &str, unpack: bool, algo: HashAlgo) -> Result<Hash> {
     let limits = Limits::new(&cfg)?;
     let mut h = Hasher::new(algo);
     if !unpack {
-        http::get(url, &[], limits, false, &mut h)?;
+        fetch::get(url, &[], limits, false, &mut h)?;
         return Ok(h.finish());
     }
     let mut spool = spool::scratch("prefetch")?;
-    http::get(url, &[], limits, true, &mut spool)?;
+    fetch::get(url, &[], limits, true, &mut spool)?;
     Tree::index(spool, limits.max_size)?
         .dump(&mut h)
         .map_err(|e| Error::io("cannot hash the unpacked tree", e))?;

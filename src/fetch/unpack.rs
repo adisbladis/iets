@@ -222,7 +222,7 @@ mod tests {
     use std::{env, str};
     use tempfile::tempdir;
 
-    use crate::fetch::http;
+    use crate::fetch::decompress;
 
     /// The unpacked tree, flattened: a directory is `dir`, a symlink `-> target`,
     /// a file its contents with a leading `x` when it is executable. Only what
@@ -274,7 +274,7 @@ mod tests {
             ("repo-abc/flake.nix", REG, 0o644, b"{}\n"),
             ("repo-abc/sub/", DIR, 0o755, b""),
         ]);
-        let root = unpack(http::decompress(bytes).unwrap(), &w.path().join("x")).unwrap();
+        let root = unpack(decompress(bytes).unwrap(), &w.path().join("x")).unwrap();
         assert_eq!(root.file_name().unwrap(), "repo-abc");
         assert_eq!(
             tree(&root),
@@ -291,7 +291,7 @@ mod tests {
     fn keeps_the_root_when_it_is_not_a_single_directory() {
         let w = tempdir().unwrap();
         let two = tar_gz(&[("a/", DIR, 0o755, b""), ("b", REG, 0o644, b"x")]);
-        let root = unpack(http::decompress(two).unwrap(), &w.path().join("two")).unwrap();
+        let root = unpack(decompress(two).unwrap(), &w.path().join("two")).unwrap();
         assert_eq!(root, w.path().join("two"));
         assert_eq!(
             tree(&root),
@@ -302,7 +302,7 @@ mod tests {
         );
 
         let one = tar_gz(&[("only", REG, 0o644, b"x")]);
-        let root = unpack(http::decompress(one).unwrap(), &w.path().join("one")).unwrap();
+        let root = unpack(decompress(one).unwrap(), &w.path().join("one")).unwrap();
         assert_eq!(root, w.path().join("one"));
         fs::remove_dir_all(w.path()).unwrap();
     }
@@ -321,7 +321,7 @@ mod tests {
             ("t/link", tar::EntryType::Symlink, 0o777, b"plain"),
             ("t/same", tar::EntryType::Link, 0o644, b"t/plain"),
         ]);
-        let root = unpack(http::decompress(bytes).unwrap(), &w.path().join("x")).unwrap();
+        let root = unpack(decompress(bytes).unwrap(), &w.path().join("x")).unwrap();
         assert_eq!(
             tree(&root),
             BTreeMap::from([
@@ -346,7 +346,7 @@ mod tests {
             ("t/f", REG, 0o644, b"first"),
             ("t/f", REG, 0o755, b"second"),
         ]);
-        let root = unpack(http::decompress(bytes).unwrap(), &w.path().join("x")).unwrap();
+        let root = unpack(decompress(bytes).unwrap(), &w.path().join("x")).unwrap();
         assert_eq!(
             tree(&root),
             BTreeMap::from([("f".to_string(), "xsecond".to_string())])
@@ -359,7 +359,7 @@ mod tests {
     fn an_unsupported_member_type_is_an_error() {
         let w = tempdir().unwrap();
         let bytes = tar_gz(&[("dev", tar::EntryType::Fifo, 0o644, b"")]);
-        let e = unpack(http::decompress(bytes).unwrap(), &w.path().join("y"));
+        let e = unpack(decompress(bytes).unwrap(), &w.path().join("y"));
         assert!(e.unwrap_err().to_string().contains("unsupported file type"));
         fs::remove_dir_all(w.path()).unwrap();
     }
@@ -388,7 +388,7 @@ mod tests {
         let bytes =
             fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/tarball/tree.tar.gz"))
                 .unwrap();
-        let root = unpack(http::decompress(bytes).unwrap(), &w.path().join("x")).unwrap();
+        let root = unpack(decompress(bytes).unwrap(), &w.path().join("x")).unwrap();
         let want = fs::read_to_string(
             Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/tarball/narHash"),
         )

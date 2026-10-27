@@ -1045,7 +1045,7 @@ pub(crate) mod tests {
 
     use crate::sys::fs::symlink;
 
-    use crate::fetch::http;
+    use crate::fetch::decompress;
     use crate::store::hash::Hasher;
     use crate::store::nar;
     use crate::treestore::pack::{self, PackWriter};
@@ -1083,7 +1083,7 @@ pub(crate) mod tests {
     /// The NAR the spool writes for `bytes`, and the NAR the tree path writes
     /// for the same archive.
     fn both(tag: &str, bytes: Vec<u8>) -> (Result<Vec<u8>>, Result<Vec<u8>>) {
-        let plain = http::decompress(bytes.clone()).unwrap();
+        let plain = decompress(bytes.clone()).unwrap();
         let mut spool = scratch(tag).unwrap();
         spool.write_all(&plain).unwrap();
         let streamed = Tree::index(spool, u64::MAX).and_then(|t| {
@@ -1265,7 +1265,7 @@ pub(crate) mod tests {
     }
 
     fn spooled(entries: &[(&str, tar::EntryType, u32, &[u8])]) -> Tree {
-        let plain = http::decompress(tar_gz(entries)).unwrap();
+        let plain = decompress(tar_gz(entries)).unwrap();
         let mut spool = scratch("test").unwrap();
         spool.write_all(&plain).unwrap();
         Tree::index(spool, u64::MAX).unwrap()
