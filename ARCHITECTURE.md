@@ -144,9 +144,11 @@ Around it:
 - `nixbin.rs`: the real Nix binaries behind the classic fallback.
 - `error.rs`: the error type outside the evaluator.
 - `api.rs`: the library facade. Frontends use this and never reach into
-  `cli`; `examples/` holds four of them. When a frontend needs something
-  that lives only in `cli`, move it into `api` or the module it belongs
-  to, and let `cli` call it there.
+  `cli`; `examples/` holds four of them. A host that embeds the evaluator
+  needs nothing outside it, and `tests/embedding.rs` makes its calls
+  through `api` alone. When a frontend needs something that lives only in
+  `cli`, move it into `api` or the module it belongs to, and let `cli` call
+  it there.
 - `main.rs` and `cli/`: the command line on top of `api`, including the
   classic names in `cli/classic/`.
 
@@ -209,7 +211,7 @@ Why the layer exists, and when an operation is warranted:
 | Why trace a store path back to a file? | `docs/explanation/provenance.md` |
 | Why may a pure evaluation not fetch a local file by its hash? | `docs/explanation/pure-eval-and-local-sources.md` |
 | What happens when a session runs out of memory, and when does the process still stop? | `docs/explanation/out-of-memory.md` |
-| What does an embedding host call outside `api`, and what would `api` have to name? | `docs/explanation/embedding-surface.md` |
+| What does an embedding host call, and how does `api` name it? | `docs/explanation/embedding-surface.md` |
 | What was tried and removed? | `docs/explanation/history.md` |
 
 Reference material — every command, setting, error code, lint, builtin,
