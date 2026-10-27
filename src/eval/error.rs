@@ -45,6 +45,8 @@ pub enum ErrorKind {
     /// The session's `MemoryHost` refused more memory. Never caught by
     /// `tryEval`.
     Budget,
+    /// A download that `IETS_OFFLINE` refused. Never caught by `tryEval`.
+    Offline,
 }
 
 impl ErrorKind {
@@ -67,6 +69,7 @@ impl ErrorKind {
             ErrorKind::Lint => "lint",
             ErrorKind::HashMismatch => "hash-mismatch",
             ErrorKind::Budget => "budget",
+            ErrorKind::Offline => "offline",
         }
     }
 }

@@ -462,7 +462,9 @@ pub fn fetch_file(
         .ok_or_else(|| cannot("iets has no cache directory to hold it".into()))?;
     let mut spool = spool::Spool::create_in(staged.dir()).map_err(|e| cannot(e.to_string()))?;
     let limits = Limits::new(nix_conf(ev.session())).map_err(|e| cannot(e.to_string()))?;
-    download(ev, url, local, &[], limits, false, &mut spool).map_err(cannot)?;
+    download(ev, url, local, &[], limits, false, &mut spool).map_err(|(kind, e)| {
+        Error::boxed(kind, format!("unable to download '{shown}': {e}"), pos)
+    })?;
     let tree = spool::Tree::file(spool).map_err(|e| cannot(e.to_string()))?;
     let entry = treestore::put(name, IngestionMethod::Flat, &expected, staged, tree).map_err(
         |e| match e {
@@ -502,7 +504,8 @@ fn local_file(ev: &Evaluator, url: &str, pos: Pos) -> EvalResult<Option<SrcPath>
     Ok(Some(at))
 }
 
-/// [`http::get`], or the read of the [`local_file`] the URL names.
+/// [`http::get`], or the read of the [`local_file`] the URL names. An error
+/// keeps its kind, so a download `IETS_OFFLINE` refused is `Offline`.
 fn download(
     ev: &Evaluator,
     url: &str,
@@ -511,15 +514,17 @@ fn download(
     limits: Limits,
     decompress: bool,
     sink: &mut dyn Write,
-) -> result::Result<u64, String> {
+) -> result::Result<u64, (ErrorKind, String)> {
+    let failed = |e: crate::error::Error| (e.eval_kind(ErrorKind::Eval), e.to_string());
     let Some(at) = local else {
-        return http::get(url, headers, limits, decompress, sink).map_err(|e| e.to_string());
+        return http::get(url, headers, limits, decompress, sink).map_err(failed);
     };
     let bytes = at.read(ev, false).map_err(|(_, e)| {
         let path = http::local_path(url).unwrap_or_default();
-        format!("cannot read '{path}': {}", crate::error::io_text(&e))
+        let msg = format!("cannot read '{path}': {}", crate::error::io_text(&e));
+        (ErrorKind::Eval, msg)
     })?;
-    http::put(url, bytes, limits, decompress, sink).map_err(|e| e.to_string())
+    http::put(url, bytes, limits, decompress, sink).map_err(failed)
 }
 
 /// In pure evaluation, the source of a locked input that is on this machine
@@ -698,8 +703,9 @@ fn fetch_tarball(
     let limits = Limits::new(nix_conf(ev.session()))
         .map_err(|e| fail(format!("iets: cannot fetch input '{name}': {e}")))?;
     let local = local_file(ev, &url, pos)?;
-    download(ev, &url, local, &headers, limits, true, &mut spool)
-        .map_err(|e| fail(format!("iets: cannot fetch input '{name}': {e}")))?;
+    download(ev, &url, local, &headers, limits, true, &mut spool).map_err(|(kind, e)| {
+        Error::boxed(kind, format!("iets: cannot fetch input '{name}': {e}"), pos)
+    })?;
     let tree = spool::Tree::index(spool, limits.max_size)
         .map_err(|e| fail(format!("iets: cannot unpack input '{name}': {e}")))?;
 
@@ -967,5 +973,44 @@ mod tests {
             valid_kind(&d.path().join("tree"), Recursive, &tree, no_store),
             None
         );
+    }
+
+    const NO_HASH: &str = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+
+    /// A host tells a download `IETS_OFFLINE` refused from the program's own
+    /// failure by its kind, without reading the words.
+    #[rstest]
+    #[case::fetchurl(format!(
+        r#"builtins.fetchurl {{ url = "file:///nonexistent/f"; sha256 = "{NO_HASH}"; }}"#
+    ))]
+    #[case::input(format!(
+        r#"builtins.fetchTree {{ type = "tarball"; url = "file:///nonexistent/t.tar.gz"; narHash = "{NO_HASH}"; }}"#
+    ))]
+    fn a_refused_download_has_a_kind_of_its_own(#[case] expr: String) {
+        use crate::api::{self, EvalArgs, Input};
+        use crate::env::Env;
+        use crate::eval::EvalConfig;
+
+        let cache = tempdir().unwrap();
+        let env = Env::isolated().with([
+            ("IETS_OFFLINE", "1".into()),
+            ("IETS_CACHE_DIR", cache.path().as_os_str().to_owned()),
+            ("NIX_CONFIG", "store = unix:///nonexistent/socket".into()),
+        ]);
+        let session = Session::with_env(env);
+        let _entered = session.enter();
+        let mut ev = EvalConfig::new().session(session.clone()).build();
+        let a = EvalArgs {
+            input: Some(Input::Expr(expr)),
+            no_ir_cache: true,
+            no_tracing_cache: true,
+            workers: 1,
+            ..EvalArgs::new()
+        };
+        let Err(e) = api::evaluate(&mut ev, a) else {
+            panic!("the download went through");
+        };
+        assert_eq!((e.kind, e.kind.code()), (ErrorKind::Offline, "offline"));
+        assert!(e.msg.contains("IETS_OFFLINE is set"), "{}", e.msg);
     }
 }
