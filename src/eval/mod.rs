@@ -234,25 +234,25 @@ pub struct WellKnown {
 #[derive(Clone)]
 pub struct Evaluator {
     pub(crate) arena: Arena,
-    pub interner: Interner,
-    pub files: Files,
-    pub globals: Globals,
-    pub root_env: &'static EnvObj,
+    pub(crate) interner: Interner,
+    pub(crate) files: Files,
+    pub(crate) globals: Globals,
+    pub(crate) root_env: &'static EnvObj,
     /// Resolved path -> lazy import thunk (`parallel::import_thunk`).
     import_cache: SharedMap<Vec<u8>, Word>,
     /// `(prefix, path)` entries, `-I` first then `NIX_PATH`.
     search_path: Vec<(Vec<u8>, Vec<u8>)>,
-    pub call_depth: u32,
-    pub try_level: u32,
-    pub s: WellKnown,
-    pub builtins_word: Word,
+    pub(crate) call_depth: u32,
+    pub(crate) try_level: u32,
+    pub(crate) s: WellKnown,
+    pub(crate) builtins_word: Word,
     /// Store path prefix, for `builtins.storeDir` and store path checks.
-    pub store_dir: Vec<u8>,
+    pub(crate) store_dir: Vec<u8>,
     current_system: &'static str,
-    pub nr_thunks: u64,
-    pub nr_function_calls: u64,
-    pub nr_store_adds: u64,
-    pub t_compile: Duration,
+    pub(crate) nr_thunks: u64,
+    pub(crate) nr_function_calls: u64,
+    pub(crate) nr_store_adds: u64,
+    pub(crate) t_compile: Duration,
     /// Where those counters and `drv.nr_derivations` go when this fiber
     /// finishes a task. Shared, so a stats line covers every fiber.
     totals: Arc<Totals>,
@@ -262,22 +262,22 @@ pub struct Evaluator {
     /// One shared context-free string per symbol, made on first use.
     sym_strings: SymWords,
     /// Source path -> virtual store path, like Nix's `srcToStore`.
-    pub src_to_store: SharedMap<Vec<u8>, &'static [u8]>,
+    pub(crate) src_to_store: SharedMap<Vec<u8>, &'static [u8]>,
     /// Every store path this evaluation added or a fetch found on disk: the
     /// paths a pure evaluation may read (eval.cc:allowPath).
-    pub known: SharedMap<StorePath, Known>,
+    pub(crate) known: SharedMap<StorePath, Known>,
     /// Locked `narHash` -> flake input name, from the lock file, for messages
     /// about an input that must be fetched.
-    pub input_names: SharedMap<String, String>,
+    pub(crate) input_names: SharedMap<String, String>,
     /// Project marker path -> present, for `lint::purity`: every path a
     /// derivation holds walks its ancestors, which repeat across derivations.
-    pub project_markers: SharedMap<Vec<u8>, bool>,
+    pub(crate) project_markers: SharedMap<Vec<u8>, bool>,
     /// Lint levels (docs/reference/lints.md).
     lint_config: lint::Config,
     /// The warnings emitted so far.
-    pub lints: Lints,
+    pub(crate) lints: Lints,
     pub drv: DrvState,
-    pub par: parallel::Ctx,
+    pub(crate) par: parallel::Ctx,
     /// This fiber's shadow stack for the sampled profile.
     prof: Stack,
     /// Read-set recorder for the tracing cache; off unless the run has an entry to write.
@@ -286,7 +286,7 @@ pub struct Evaluator {
     ir_cache: Option<Arc<IrCache>>,
     /// The eval store, opened on the first flake input that is missing from it
     /// (`crate::source`).
-    pub store: LazyStore,
+    pub(crate) store: LazyStore,
     /// `==` by Nix's exact rules, not by the shortcut that two equal forced
     /// values are equal. Only the eval fuzz target turns it on, to tell that
     /// known divergence from others (docs/reference/divergences.md).
