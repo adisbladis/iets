@@ -22,7 +22,7 @@ because a word made up from bits would let a safe call read any address.
 |:---|:---|
 | Create an evaluator | `eval::Evaluator::new()` for the defaults; `eval::EvalConfig::new()`, its setters, then `build()` |
 | Settings of the arguments | `EvalArgs::config(base)` puts the lints, the IR cache, the search path and `--dump-drvs` on an `EvalConfig` |
-| The state a run owns | `session::Session::new()`, `Session::enter()` ("What the host owns") |
+| The state a run owns | `session::Session::new()`, `Session::enter()`, `Evaluator::enter()` ("What the host owns") |
 | The memory a session holds | `Session::heap`: `bytes()`, `set_release(Release)`, `join(&MemoryGroup)` ("Sessions and memory") |
 | Bound several sessions together | `runtime::heap::{MemoryGroup, MemoryHost}` ("Bounding memory") |
 | Environment settings | `Session::settings()`, `Session::load_settings(&opts)` (docs/reference/settings.md) |
@@ -72,7 +72,20 @@ let _entered = session.enter();         // for this thread
 let mut ev = Evaluator::new();          // adopts the session
 ```
 
-To skip the thread-local, use `EvalConfig::new().session(session)`.
+To skip the thread-local, use `EvalConfig::new().session(session)`. An
+evaluator then reads its own session whichever session the thread entered:
+`build()`, every `api` call that takes an evaluator, `api::value::Eval` and
+`parallel::try_run` enter it for as long as they run, so the settings, the
+nix.conf, the log and the tree store that an evaluation reaches are its
+session's. A session reads its settings and its nix.conf from its own
+environment (`Session::with_env`), whichever thread asks. A call of the
+evaluator's own methods (`Evaluator::force`, `print::print_json`) runs in the
+session the thread entered, so enter the evaluator's first:
+
+```rust
+let _entered = ev.enter();
+ev.force(w)?;
+```
 
 An evaluator has no setters: put each setting on the `EvalConfig` before
 `build()`. Two defaults differ from the command line, because a host has no

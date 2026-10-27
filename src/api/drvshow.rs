@@ -25,6 +25,7 @@ const VERSION: u64 = 4;
 /// The whole `nix derivation show` document: `{"derivations": {…}, "version":
 /// 4}`, keyed by base name as `StorePath::to_string` renders it.
 pub fn show(ev: &Evaluator, roots: &[StorePath], recursive: bool) -> Result<Value> {
+    let _entered = ev.session().enter();
     let table = ev.drv.drvs.lock();
     let nodes = if recursive {
         closure(roots, &table)?

@@ -28,12 +28,14 @@ pub fn parse_attr_path(s: &str) -> Result<Vec<String>> {
 /// eval-cache.cc:AttrCursor::findAlongAttrPath: walks `path` from `v`,
 /// forcing each step; `None` when a step is missing or is not an attrset.
 pub fn select(ev: &mut Evaluator, v: Word, path: &[String]) -> EvalResult<Option<Word>> {
+    let _entered = ev.enter();
     flake::select(ev, v, path)
 }
 
 /// The flake's outputs, with the reference's attribute path selected from
 /// them. The lock is read, the inputs are fetched and `call-flake.nix` runs.
 pub fn outputs(ev: &mut Evaluator, fr: &FlakeRef) -> EvalResult<Word> {
+    let _entered = ev.enter();
     flake::eval_flake(ev, fr)
 }
 
@@ -59,6 +61,7 @@ pub fn url(fr: &FlakeRef) -> String {
 
 /// The tree a reference names, copied or fetched if it is not here yet.
 pub fn tree(ev: &mut Evaluator, r: &SourceRef) -> EvalResult<Tree> {
+    let _entered = ev.enter();
     source::tree(ev, r, Pos::NONE)
 }
 

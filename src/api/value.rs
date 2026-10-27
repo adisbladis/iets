@@ -224,6 +224,7 @@ impl<'e> Eval<'e> {
 
     /// Evaluate an expression; relative paths resolve against `base_dir`.
     pub fn eval_expr(&mut self, src: &str, base_dir: &[u8]) -> EvalResult<Value<'e>> {
+        let _entered = self.ev.enter();
         self.ev.eval_string(src, base_dir).map(val)
     }
 
@@ -235,17 +236,23 @@ impl<'e> Eval<'e> {
     /// To weak head normal form: the value's own type becomes known.
     #[inline]
     pub fn force(&mut self, v: Value<'e>) -> EvalResult<Value<'e>> {
+        if !v.w.is_thunk() {
+            return Ok(v);
+        }
+        let _entered = self.ev.enter();
         self.ev.force(v.w).map(val)
     }
 
     /// Recursively, through lists and attribute sets.
     pub fn force_deep(&mut self, v: Value<'e>) -> EvalResult<Value<'e>> {
+        let _entered = self.ev.enter();
         self.ev.force_deep(v.w).map(val)
     }
 
     /// The attribute `name`, unforced, or `None` when the set has none.
     /// Errors when `v` is not an attribute set.
     pub fn attr(&mut self, v: Value<'e>, name: &[u8]) -> EvalResult<Option<Value<'e>>> {
+        let _entered = self.ev.enter();
         let a = self.ev.force_attrs(v.w, Pos::NONE, WHERE)?;
         // a name no source ever mentioned cannot be an attribute
         let Some(sym) = self.ev.interner.get(name) else {
@@ -261,6 +268,7 @@ impl<'e> Eval<'e> {
     /// Attribute `i` in the set's own order: its name and its unforced
     /// value. The order is not alphabetical (docs/reference/library.md).
     pub fn attr_at(&mut self, v: Value<'e>, i: usize) -> EvalResult<Option<(&'e [u8], Value<'e>)>> {
+        let _entered = self.ev.enter();
         let a = self.ev.force_attrs(v.w, Pos::NONE, WHERE)?;
         // `//` keeps both sides; index order needs the merged copy
         let a = if a.is_union() {
@@ -276,6 +284,7 @@ impl<'e> Eval<'e> {
 
     /// Apply a function value to one argument.
     pub fn call(&mut self, f: Value<'e>, arg: Value<'e>) -> EvalResult<Value<'e>> {
+        let _entered = self.ev.enter();
         self.ev.call1(f.w, arg.w, Pos::NONE).map(val)
     }
 

@@ -95,13 +95,14 @@ pub fn try_run<R: Send + 'static>(
     mut ev: Evaluator,
     f: impl FnOnce(&mut Evaluator) -> R + Send + 'static,
 ) -> Result<R, fiber::StackError> {
+    // the evaluator reads its own session wherever this thread is, and the
+    // workers inherit it, so their arenas map into this session's heap
+    let _entered = ev.enter();
     if workers <= 1 {
         let r = f(&mut ev);
         ev.lints.flush();
         return Ok(r);
     }
-    // the workers inherit it, so their arenas map into this session's heap
-    let _entered = ev.session().clone().enter();
     let template = force::SyncEv(ev.clone());
     let rt = sched::Runtime::start(workers, Box::new(template), stack_size())?;
     let user = Box::into_raw(Box::new(ev)) as *mut ();
