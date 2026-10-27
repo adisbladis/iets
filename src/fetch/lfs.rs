@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 
 use crate::cachefs;
 use crate::fetch::git;
-use crate::fetch::http::{self, Limits};
+use crate::fetch::{self, Limits};
 use crate::flake::flakeref;
 use crate::log;
 use crate::remote::worker::shell_split;
@@ -209,7 +209,7 @@ fn batch(
         .collect();
     let body = json!({ "operation": "download", "objects": objects }).to_string();
     let mut out = Vec::new();
-    http::post(&url, &headers, body.into_bytes(), limits, &mut out).map_err(|e| e.to_string())?;
+    fetch::post(&url, &headers, body.into_bytes(), limits, &mut out).map_err(|e| e.to_string())?;
     let resp: Value =
         serde_json::from_slice(&out).map_err(|e| format!("response did not parse as json: {e}"))?;
     let Some(objects) = resp["objects"].as_array() else {
@@ -253,7 +253,7 @@ fn batch(
 fn download(cache: &Path, d: &Download, limits: Limits) -> Result<(), String> {
     let (p, href) = (&d.pointer, &d.href);
     let mut bytes = Vec::new();
-    http::get(href, &d.headers, limits, false, &mut bytes).map_err(|e| {
+    fetch::get(href, &d.headers, limits, false, &mut bytes).map_err(|e| {
         let e = e.to_string();
         // a presigned query is a credential
         match href.split_once('?') {

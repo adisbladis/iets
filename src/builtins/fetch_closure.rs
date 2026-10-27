@@ -10,7 +10,7 @@ use std::thread;
 
 use super::paths::{coerce_to_path, store_path_string, to_store_path};
 use crate::eval::{Error, ErrorKind, EvalResult, Evaluator, Pos, bail};
-use crate::fetch::http::{self, Limits};
+use crate::fetch::{self, Limits};
 use crate::runtime::{Value, Word};
 use crate::session::Session;
 use crate::store::narinfo::{Fetched, NarInfo};
@@ -213,7 +213,7 @@ fn fetch_all(
         for _ in 0..JOBS {
             s.spawn(|| {
                 let _entered = session.enter();
-                let mut kept = match http::Kept::new() {
+                let mut kept = match fetch::Kept::new() {
                     Ok(k) => k,
                     Err(e) => {
                         let mut w = walk.lock().unwrap_or_else(|e| e.into_inner());
@@ -263,14 +263,14 @@ fn fetch_all(
 }
 
 fn narinfo(
-    kept: &mut http::Kept,
+    kept: &mut fetch::Kept,
     store: &str,
     p: &StorePath,
     limits: Limits,
 ) -> Result<NarInfo, String> {
     let url = format!("{store}/{}.narinfo", p.hash_part());
     let body = kept.get(&url, limits).map_err(|e| e.to_string())?;
-    let shown = http::shown(&url);
+    let shown = fetch::shown(&url);
     let ni = NarInfo::parse(&String::from_utf8_lossy(&body), &shown).map_err(|e| e.0)?;
     if ni.path != *p {
         return Err(format!(

@@ -12,7 +12,7 @@ use std::thread;
 use tempfile::{NamedTempFile, TempPath};
 
 use crate::error::{Error, Result};
-use crate::fetch::http::{self, Limits};
+use crate::fetch::{self, Limits};
 use crate::remote::plan::Object;
 use crate::session::{self, Session};
 use crate::store::narinfo::Fetched;
@@ -245,9 +245,9 @@ fn streamed(
     let (r, mut w) = io::pipe().map_err(|e| Error::io("cannot create a pipe", e))?;
     thread::scope(|scope| {
         let got = scope.spawn(session::bind(move || {
-            http::get_or_read(&url, &[], limits, false, &mut w)
+            fetch::get_or_read(&url, &[], limits, false, &mut w)
         }));
-        let used = http::decompress_reader(Box::new(r), u64::MAX).and_then(|mut r| use_(&mut r));
+        let used = fetch::decompress_reader(Box::new(r), u64::MAX).and_then(|mut r| use_(&mut r));
         let got = got.join().unwrap_or_else(|p| panic::resume_unwind(p));
         got?;
         used
@@ -329,6 +329,6 @@ fn one(f: &Fetched, limits: Limits) -> Result<TempPath> {
     let url = format!("{}/{}", f.store, f.info.url);
     let mut file =
         NamedTempFile::new().map_err(|e| Error::io("cannot create a temporary file", e))?;
-    http::get_or_read(&url, &[], limits, false, file.as_file_mut())?;
+    fetch::get_or_read(&url, &[], limits, false, file.as_file_mut())?;
     Ok(file.into_temp_path())
 }

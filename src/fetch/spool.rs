@@ -1141,7 +1141,7 @@ pub(crate) mod tests {
     use std::fs;
     use tempfile::tempdir;
 
-    use crate::fetch::http;
+    use crate::fetch::decompress;
     use crate::store::hash::Hasher;
     use crate::store::nar;
     use crate::treestore::pack::{self, PackWriter};
@@ -1179,7 +1179,7 @@ pub(crate) mod tests {
     /// The NAR the spool writes for `bytes`, and the NAR the tree path writes
     /// for the same archive.
     fn both(bytes: Vec<u8>) -> (Result<Vec<u8>>, Result<Vec<u8>>) {
-        let plain = http::decompress(bytes.clone()).unwrap();
+        let plain = decompress(bytes.clone()).unwrap();
         let mut spool = Spool::scratch().unwrap();
         spool.write_all(&plain).unwrap();
         let streamed = Tree::index(spool, u64::MAX).and_then(|t| {
@@ -1361,7 +1361,7 @@ pub(crate) mod tests {
     }
 
     fn spooled(entries: &[(&str, tar::EntryType, u32, &[u8])]) -> Tree {
-        let plain = http::decompress(tar_gz(entries)).unwrap();
+        let plain = decompress(tar_gz(entries)).unwrap();
         let mut spool = Spool::scratch().unwrap();
         spool.write_all(&plain).unwrap();
         Tree::index(spool, u64::MAX).unwrap()
@@ -1591,7 +1591,7 @@ pub(crate) mod tests {
         let mut entries = vec![("f", REG, 0o644, &big[..])];
         let names: Vec<String> = (0..32).map(|i| format!("l{i}")).collect();
         entries.extend(names.iter().map(|n| (n.as_str(), HARD, 0o644, &b"f"[..])));
-        let tar = http::decompress(tar_gz(&entries)).unwrap();
+        let tar = decompress(tar_gz(&entries)).unwrap();
         let mut spool = Spool::scratch().unwrap();
         spool.write_all(&tar).unwrap();
         let e = Tree::index(spool, 1 << 20).unwrap_err().to_string();
@@ -1625,7 +1625,7 @@ pub(crate) mod tests {
     #[test]
     fn a_dropped_hard_link_costs_nothing() {
         let big = vec![b'x'; 300 << 10];
-        let tar = http::decompress(tar_gz(&[
+        let tar = decompress(tar_gz(&[
             ("f", REG, 0o644, &big[..]),
             ("a", HARD, 0o644, b"f"),
             ("b", HARD, 0o644, b"f"),

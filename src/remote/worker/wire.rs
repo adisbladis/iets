@@ -4,7 +4,7 @@
 use std::fs::File;
 use std::io::{self, Read, Write};
 
-use crate::fetch::http::decompress_reader;
+use crate::fetch::decompress_reader;
 use crate::remote::plan::{DrvHashes, Object};
 use crate::store::hash::{Hash, HashAlgo, base64_decode, base64_encode, hash_bytes};
 use crate::store::nar::{dump_string, flat_hash};
