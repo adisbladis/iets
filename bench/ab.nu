@@ -2,7 +2,7 @@
 # Usage: bench/ab.nu [--runs N] [--skip-outpaths] BEFORE AFTER
 # Interleaved A/B of two iets binaries: one hyperfine invocation per
 # workload (`--warmup 1 --runs N`, default 7) so the runs alternate, on
-# nixos-server at 1 and 4 workers, nixos-minimal at 1 worker, and outpaths
+# nixos-server at 1 and 4 workers and pure from a checkout at 1, nixos-minimal at 1 worker, and outpaths
 # chunk 0 of 8 (`eval-jobs --no-instantiate`) at 1 worker. Prints the
 # median wall, mean user and sys, the peak RSS of one extra timed run, and
 # the wall change. Run it on an idle box.
@@ -13,21 +13,21 @@ def rss-mb [bin: string, args: list<string>]: nothing -> int {
   ($line | split row " " | get 1 | into int) / 1024 | math round
 }
 
-def main [
-  --runs: int = 7
-  --skip-outpaths
-  before: string
-  after: string
-] {
-  cd ($env.FILE_PWD | path join "..")
-  let np = ($env.NIXPKGS? | default "/nix/store/ah3pxz4xa52hd6vhbx17vcsci0b8bmbr-source")
-  let server = $"($env.PWD)/bench/workloads/nixos-server.nix"
-  let minimal = $"($env.PWD)/bench/workloads/nixos-minimal.nix"
-  let outpaths = (mktemp --tmpdir outpaths.XXXXXX)
+# Everything that can fail or be interrupted once the temporary files exist,
+# so `main` removes them either way.
+def measure [
+  before: string, after: string, runs: int, skip_outpaths: bool, np: string,
+  server: string, minimal: string, outpaths: string, checkout: string
+]: nothing -> list<record> {
+  ^cp -r $"($np)/." $checkout
+  ^chmod -R u+w $checkout
+  "" | save -f $"($checkout)/iets.toml"
+  open --raw $server | str replace "<nixpkgs>" "./." | save -f $"($checkout)/bench.nix"
   $"import ($np)/ci/eval/outpaths.nix { path = ($np); systems = [ \"x86_64-linux\" ]; includeBroken = false; }\n" | save -f $outpaths
   mut cases = [
     { name: "nixos-server w1", args: [eval --impure --strict --no-tracing-cache --workers "1" -I $"nixpkgs=($np)" $server] }
     { name: "nixos-server w4", args: [eval --impure --strict --no-tracing-cache --workers "4" -I $"nixpkgs=($np)" $server] }
+    { name: "nixos-server pure w1", args: [eval --strict --no-tracing-cache --workers "1" --lint "absolute-path-in-drv=off" $"($checkout)/bench.nix"] }
     { name: "nixos-minimal w1", args: [eval --impure --strict --no-tracing-cache --workers "1" -I $"nixpkgs=($np)" $minimal] }
   ]
   if not $skip_outpaths {
@@ -58,7 +58,30 @@ def main [
       after_rss: $rss_b
     })
   }
-  rm -f $outpaths
+  $rows
+}
+
+def main [
+  --runs: int = 7
+  --skip-outpaths
+  before: string
+  after: string
+] {
+  cd ($env.FILE_PWD | path join "..")
+  let np = ($env.NIXPKGS? | default "/nix/store/ah3pxz4xa52hd6vhbx17vcsci0b8bmbr-source")
+  let server = $"($env.PWD)/bench/workloads/nixos-server.nix"
+  let minimal = $"($env.PWD)/bench/workloads/nixos-minimal.nix"
+  let outpaths = (mktemp --tmpdir outpaths.XXXXXX)
+  # a checkout with a project marker: every file a pure eval reads is a
+  # project path, which `store_hooks::admits` checks
+  let checkout = (mktemp -d --tmpdir checkout.XXXXXX)
+  let rows = try {
+    measure $before $after $runs $skip_outpaths $np $server $minimal $outpaths $checkout
+  } catch {|e|
+    rm -rf $outpaths $checkout
+    error make {msg: $e.msg}
+  }
+  rm -rf $outpaths $checkout
   print "| workload | wall before | wall after | change | user before | user after | sys before | sys after | RSS before | RSS after |"
   print "|---|---|---|---|---|---|---|---|---|---|"
   for r in $rows {
