@@ -18,8 +18,7 @@ use std::{result, slice, thread};
 use super::scm::{Commit, Entry};
 use super::{AttrVal, Attrs, Tree, attrs_to_json, parse_nar_hash, str_attr, to_url};
 use crate::eval::{Error, ErrorKind, EvalResult, Evaluator, Pos, bail};
-use crate::fetch::http::{self, Limits};
-use crate::fetch::spool;
+use crate::fetch::{self, Limits, spool};
 use crate::log::{self, Activity};
 use crate::progress::Mode;
 use crate::remote::event;
@@ -461,7 +460,7 @@ pub fn fetch_file(
         adopt_file(ev, &sp, &entry, expected);
         return Ok(sp);
     }
-    let shown = http::shown(url);
+    let shown = fetch::shown(url);
     let _fetching = treestore::fetch_lock(sp.base_name(), || {
         log::line(&format!(
             "iets: waiting for another process to download '{shown}'"
@@ -476,7 +475,7 @@ pub fn fetch_file(
         .ok_or_else(|| cannot("iets has no cache directory to hold it".into()))?;
     let mut spool = spool::spool_file(staged.dir()).map_err(|e| cannot(e.to_string()))?;
     let limits = Limits::new(ev.session().nix_conf()).map_err(|e| cannot(e.to_string()))?;
-    http::get(url, &[], limits, false, &mut spool).map_err(|e| {
+    fetch::get(url, &[], limits, false, &mut spool).map_err(|e| {
         let kind = e.eval_kind(ErrorKind::Eval);
         Error::boxed(kind, format!("unable to download '{shown}': {e}"), pos)
     })?;
@@ -646,7 +645,7 @@ fn fetch_tarball(
         .map_err(|e| fail(format!("iets: cannot fetch input '{name}': {e}")))?;
     let limits = Limits::new(ev.session().nix_conf())
         .map_err(|e| fail(format!("iets: cannot fetch input '{name}': {e}")))?;
-    http::get_decompressed(&url, &headers, limits, &mut spool).map_err(|e| {
+    fetch::get_decompressed(&url, &headers, limits, &mut spool).map_err(|e| {
         let kind = e.eval_kind(ErrorKind::Eval);
         Error::boxed(kind, format!("iets: cannot fetch input '{name}': {e}"), pos)
     })?;
@@ -667,7 +666,7 @@ fn fetch_tarball(
             let msg = format!(
                 "iets: NAR hash mismatch in input '{name}' ({}): expected '{}' \
                  but the tree iets fetched hashes to '{}'",
-                crate::fetch::http::shown(&url),
+                fetch::shown(&url),
                 expected.to_sri(),
                 got.to_sri()
             );
