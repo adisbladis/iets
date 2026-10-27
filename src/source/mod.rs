@@ -28,9 +28,7 @@ use crate::store::path::StorePath;
 pub(crate) use local::{commit_tree, path_tree, workdir};
 pub use lock::Lock;
 pub use remote::LazyStore;
-pub(crate) use remote::{
-    ensure_readable, fetch_file, local_daemon, nix_conf, store_commit, valid_in_store,
-};
+pub(crate) use remote::{ensure_readable, fetch_file, local_daemon, store_commit, valid_in_store};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AttrVal {

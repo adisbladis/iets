@@ -14,7 +14,6 @@ use crate::cachefs;
 use crate::flake::flakeref;
 use crate::log;
 use crate::session::Session;
-use crate::source::nix_conf;
 use crate::store::hash::{HashAlgo, base64_decode, hash_bytes};
 use crate::sys;
 
@@ -223,7 +222,7 @@ fn fetch(want: &Want) -> Result<Fetched, String> {
     // the age of a ref's file is when it was fetched, so gc must not pack it
     git(&dir, &["config", "gc.packRefs", "false"]);
 
-    let secs = nix_conf(&Session::current()).int("tarball-ttl");
+    let secs = Session::current().nix_conf().int("tarball-ttl");
     let ttl = Duration::from_secs(secs.ok().flatten().unwrap_or(3600));
     // a cached rev needs no fetch, so skip the remote round trip
     let uses_default = want.r#ref.is_none()

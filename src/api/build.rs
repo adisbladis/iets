@@ -69,6 +69,7 @@ pub fn transport(url: Option<&str>, cfg: &Config) -> Result<Transport> {
 /// store), which the plan uploads after what it references; any other root
 /// is `Error::UnknownRoot`.
 pub fn plan(ev: &Evaluator, roots: &[StorePath]) -> Result<Plan> {
+    let _entered = ev.session().enter();
     let drvs = ev.drv.drvs.lock();
     let sources = ev.known.origins();
     plan_with(roots, &drvs, &sources)
