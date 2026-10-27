@@ -4,12 +4,11 @@ use std::ffi::{OsStr, OsString};
 use std::panic::{self, AssertUnwindSafe};
 use std::path::Path;
 use std::sync::atomic::Ordering;
-use std::thread::Builder;
 
-use crate::api::MAIN_STACK;
+use crate::api;
 use crate::cli::{self, help};
 use crate::env::Env;
-use crate::session::{self, Exit, Session, exit};
+use crate::session::{Exit, Session, exit};
 use crate::{log, profile, settings};
 
 pub fn classic_name(argv0: &OsStr) -> Option<String> {
@@ -17,15 +16,13 @@ pub fn classic_name(argv0: &OsStr) -> Option<String> {
     cli::classic::NAMES.contains(&base.as_str()).then_some(base)
 }
 
-/// An `exit` on the evaluator thread has to end the command here too.
-fn on_big_stack(f: impl FnOnce() -> i32 + Send + 'static) -> i32 {
-    let joined = Builder::new()
-        .stack_size(MAIN_STACK)
-        .spawn(session::bind(f))
-        .expect("spawn evaluator thread")
-        .join();
-    match joined {
-        Ok(code) => code,
+/// `f` on the stack the demand fiber has, reserved on this thread
+/// (`api::on_main_stack`). An `exit` in `f` ends the command, and any other
+/// panic is exit code 1.
+fn on_big_stack(f: impl FnOnce() -> i32) -> i32 {
+    match panic::catch_unwind(AssertUnwindSafe(|| api::on_main_stack(f))) {
+        Ok(Ok(code)) => code,
+        Ok(Err(e)) => cli::stacks(e),
         Err(p) => match p.downcast::<Exit>() {
             Ok(e) => exit(e.0),
             Err(_) => 1,

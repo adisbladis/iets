@@ -54,7 +54,7 @@ const REACHES: &[(&str, &[&str])] = &[
     ("src/cli/diff.rs", &["remote", "store"]),
     ("src/cli/eval.rs", &["eval", "trace"]),
     ("src/cli/jobs.rs", &["eval", "jobs", "remote"]),
-    ("src/cli/mod.rs", &["eval", "parallel", "trace"]),
+    ("src/cli/mod.rs", &["eval", "trace"]),
     (
         "src/cli/plumbing.rs",
         &["build", "eval", "jobs", "remote", "store"],

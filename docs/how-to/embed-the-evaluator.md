@@ -283,7 +283,7 @@ session.heap.join(&group);              // one MemoryGroup for every session
 session.heap.set_release(Release::Unmap);
 let _entered = session.enter();
 
-// on a thread built with `stack_size(api::MAIN_STACK)`
+// inside api::on_main_stack(|| …), on the room the demand fiber has
 let mut ev = EvalConfig::new().session(session.clone()).pure(true).no_lints().build();
 
 let plan = build::plan(&ev, &roots)?;   // api::Error::UnknownRoot names a root it did not make

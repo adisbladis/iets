@@ -344,15 +344,19 @@ fails nothing never reads the table.
 
 ### Stack limits
 
-The demand fiber has the stack of the process main thread
+The demand fiber has the stack the command line evaluates on
 (`fiber::MAIN_STACK`), so a program that works at one worker is not a
-crash at four. A helper's stack is smaller, and the force path and the
-deep walk stop a fiber that comes within `fiber::MARGIN` of its guard
-page. A helper drops its task in silence and the demand path computes the
-value, so the demand fiber reports what Nix reports. A guard page can still
-be hit, for example when the compiler recurses over a deeply nested
-expression without forcing. A handler on an alternate signal stack catches
-it, prints Nix's `stack overflow (possible infinite recursion)` and exits 1.
+crash at four. Both are reservations with a guard page: the command line
+switches its thread onto one (`fiber::on_stack`) rather than start a thread
+whose 4 GiB stack the kernel would charge
+(`docs/explanation/out-of-memory.md`). A helper's stack is smaller, and the
+force path and the deep walk stop a fiber that comes within `fiber::MARGIN`
+of its guard page. A helper drops its task in silence and the demand path
+computes the value, so the demand fiber reports what Nix reports. A guard
+page can still be hit, for example when the compiler recurses over a deeply
+nested expression without forcing. A handler on an alternate signal stack
+catches it, prints Nix's `stack overflow (possible infinite recursion)` and
+exits 1.
 
 ### `trace` and `warn`
 

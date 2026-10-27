@@ -70,6 +70,33 @@ a process when its pages run out instead. A refused mapping comes from
 strict overcommit (`vm.overcommit_memory = 2`), a `RLIMIT_AS` or
 `RLIMIT_DATA` limit, or an address space or map count that ran out.
 
+## The stacks are reserved
+
+The evaluator runs on big stacks: 4 GiB for the demand path and 256 MiB for
+each helper fiber. Each one is a reservation (`MAP_NORESERVE`) with a guard
+page at its low end, so under the default overcommit a page costs memory
+only once the stack reaches it. The command line switches its evaluating
+thread onto such a stack, and `api::on_main_stack` does the same for a host.
+
+A thread's own stack is no reservation. The kernel charges all of it, and
+its default heuristic refuses one mapping larger than memory and swap
+together. So a thread built with a 4 GiB stack does not start on a machine
+with less, where the reserved stack does.
+
+Strict overcommit charges a reservation as it charges any mapping, and an
+`RLIMIT_AS` or `RLIMIT_DATA` limit counts it. A stack the kernel refuses is
+an error, not a crash: `iets` prints `iets: cannot reserve 4096 MiB of fiber
+stacks: Cannot allocate memory (os error 12)` and exits 1, and
+`api::on_main_stack` runs nothing and returns the `StackError`. A run with
+more than one worker reserves another 4 GiB for its demand fiber and 256 MiB
+for each helper. A helper fiber the run cannot reserve is left out, and the
+run goes on with the fibers it has.
+
+The stacks are not all an evaluator reserves. Its symbol tables are three
+reservations of `MAX_SYMS` words, 8 GiB each, and a refused one still stops
+the process (`per-symbol table: mmap failed`). Under strict overcommit an
+evaluator needs about 28 GiB of the commit limit at one worker.
+
 ## What a host does
 
 Keep sessions from reaching the machine's limit at all. Put them in a
