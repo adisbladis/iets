@@ -19,7 +19,6 @@ use crate::flake::flakeref;
 use crate::log;
 use crate::remote::worker::shell_split;
 use crate::session::Session;
-use crate::source::nix_conf;
 use crate::source::scm::Entry;
 use crate::store::hash::{HashAlgo, hash_bytes};
 use crate::sys;
@@ -327,7 +326,7 @@ pub fn smudge(repo: &Path, rev: &str, entries: &mut [(Vec<u8>, Entry)]) -> Resul
     missing.sort_by(|a, b| a.oid.cmp(&b.oid));
     missing.dedup();
     if !missing.is_empty() {
-        let limits = Limits::new(nix_conf(&Session::current())).map_err(|e| e.to_string())?;
+        let limits = Limits::new(Session::current().nix_conf()).map_err(|e| e.to_string())?;
         let api = api(repo, rev)?;
         // git-lfs's own batch size, which servers may enforce
         let mut found = Vec::new();

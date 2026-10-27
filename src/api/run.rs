@@ -302,7 +302,7 @@ mod tests {
                 let session = Session::new();
                 session.use_settings(Settings {
                     offline: false,
-                    ..Settings::default()
+                    ..Settings::of_env(&session.env)
                 });
                 let cfg = EvalConfig::new().pure(false).session(session);
                 Run::over(cfg, &a)

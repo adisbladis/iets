@@ -261,9 +261,21 @@ pub fn check_project(text: &str, origin: &Path) -> result::Result<(), String> {
 
 impl Settings {
     /// The file, then `$IETS_CONFIG`, then `overrides`, then the environment
-    /// for the knobs that have a variable. Later wins.
-    pub fn load(overrides: &[(String, String)]) -> Result<Settings> {
-        Settings::load_from(&conf_file(), overrides, &Env(session_var))
+    /// for the knobs that have a variable. Later wins. `env` names the file and
+    /// holds the variables.
+    pub fn load(env: &HostEnv, overrides: &[(String, String)]) -> Result<Settings> {
+        let vars = |name: &str| env.var_os(name);
+        Settings::load_from(&conf_file_in(env), overrides, &Env(&vars))
+    }
+
+    /// The knobs of `env` alone, for a session that read no file. A knob
+    /// that does not parse is [`Settings::load`]'s to report, so here the
+    /// whole environment is dropped instead of failing a library's session.
+    pub fn of_env(env: &HostEnv) -> Settings {
+        let vars = |name: &str| env.var_os(name);
+        Settings::from_conf(&Conf::default(), &Env(&vars))
+            .or_else(|_| Settings::from_conf(&Conf::default(), &Env(&|_| None)))
+            .expect("no file and no environment cannot fail")
     }
 
     fn load_from(file: &Path, overrides: &[(String, String)], env: &Env) -> Result<Settings> {
@@ -400,18 +412,6 @@ impl Settings {
             complete_ms: env.num("IETS_COMPLETE_MS")?.unwrap_or(5000),
             options: Vec::new(),
         })
-    }
-}
-
-impl Default for Settings {
-    /// The environment knobs alone, for a session that read no file. A knob
-    /// that does not parse is [`Settings::load`]'s to report, so here the
-    /// whole environment is dropped instead of failing a library's session.
-    fn default() -> Settings {
-        let empty = || Settings::from_conf(&Conf::default(), &Env(|_| None));
-        Settings::from_conf(&Conf::default(), &Env(session_var))
-            .or_else(|_| empty())
-            .expect("no file and no environment cannot fail")
     }
 }
 
@@ -555,8 +555,9 @@ fn env_bool(name: &str, v: &OsStr) -> Result<bool> {
 /// `IETS_NIX_FALLBACK=always` from the environment alone: a classic command
 /// runs the real Nix before iets reads anything else, the settings file
 /// included, so the switch works when a setting is broken.
-pub fn fallback_forced() -> Result<bool> {
-    fallback_forced_from(&Env(session_var))
+pub fn fallback_forced(env: &HostEnv) -> Result<bool> {
+    let vars = |name: &str| env.var_os(name);
+    fallback_forced_from(&Env(&vars))
 }
 
 fn fallback_forced_from(env: &Env) -> Result<bool> {
@@ -566,11 +567,12 @@ fn fallback_forced_from(env: &Env) -> Result<bool> {
 impl Settings {
     /// What a forced fallback needs when the settings do not load: where
     /// the real Nix is. From the environment alone, like the switch.
-    pub fn for_fallback() -> Settings {
+    pub fn for_fallback(env: &HostEnv) -> Settings {
+        let vars = |name: &str| env.var_os(name);
         Settings {
-            nix_bin_dir: Env(session_var).dir("IETS_NIX_BIN_DIR"),
+            nix_bin_dir: Env(&vars).dir("IETS_NIX_BIN_DIR"),
             nix_fallback: NixFallback::Always,
-            ..Settings::default()
+            ..Settings::of_env(env)
         }
     }
 }
@@ -587,13 +589,9 @@ fn nix_fallback_var(env: &Env) -> Result<Option<NixFallback>> {
 }
 
 /// The environment a load reads: the session's, or a test's.
-struct Env(fn(&str) -> Option<OsString>);
+struct Env<'a>(&'a dyn Fn(&str) -> Option<OsString>);
 
-fn session_var(name: &str) -> Option<OsString> {
-    Session::current().env.var_os(name)
-}
-
-impl Env {
+impl Env<'_> {
     fn str(&self, name: &str) -> Option<String> {
         let v = (self.0)(name)?.into_string().ok()?;
         (!v.is_empty()).then_some(v)
@@ -644,18 +642,18 @@ mod tests {
     use rstest::rstest;
     use tempfile::tempdir;
 
-    const NO_ENV: Env = Env(|_| None);
+    const NO_ENV: Env<'static> = Env(&|_| None);
 
     #[test]
     fn a_forced_fallback_comes_from_the_environment_alone() {
         assert!(!fallback_forced_from(&NO_ENV).unwrap());
-        let always = Env(|n| (n == "IETS_NIX_FALLBACK").then(|| "always".into()));
+        let always = Env(&|n| (n == "IETS_NIX_FALLBACK").then(|| "always".into()));
         assert!(fallback_forced_from(&always).unwrap());
-        let never = Env(|n| (n == "IETS_NIX_FALLBACK").then(|| "never".into()));
+        let never = Env(&|n| (n == "IETS_NIX_FALLBACK").then(|| "never".into()));
         assert!(!fallback_forced_from(&never).unwrap());
         let s = Settings::load_from(Path::new("/nonexistent"), &[], &never).unwrap();
         assert_eq!(s.nix_fallback, NixFallback::Never);
-        let bad = Env(|n| (n == "IETS_NIX_FALLBACK").then(|| "maybe".into()));
+        let bad = Env(&|n| (n == "IETS_NIX_FALLBACK").then(|| "maybe".into()));
         assert!(fallback_forced_from(&bad).is_err());
     }
     /// Where the user file goes under `d`. Nothing writes it yet.
@@ -686,7 +684,7 @@ mod tests {
             "builder = \"user\"\nworkers = 2\nfiber-stack-mb = 2\ncache = false\nfetch-max-size = 1\n",
         )
         .unwrap();
-        let env = Env(|n| match n {
+        let env = Env(&|n| match n {
             "IETS_CONFIG" => Some("builder = \"inline\"\nworkers = 3\n".into()),
             "IETS_WORKERS" => Some("5".into()),
             "IETS_CACHE" => Some("1".into()),
@@ -702,7 +700,7 @@ mod tests {
         assert_eq!(s.builder, vec![BuilderSpec::bare("user")]);
         assert_eq!(s.workers, Some(2));
         assert!(!s.cache);
-        let inline = Env(|n| (n == "IETS_CONFIG").then(|| "workers = 3".into()));
+        let inline = Env(&|n| (n == "IETS_CONFIG").then(|| "workers = 3".into()));
         let s = Settings::load_from(&file, &opts(&[("workers", "4")]), &inline).unwrap();
         assert_eq!(s.workers, Some(4));
         let s = Settings::load_from(&file, &[], &inline).unwrap();
@@ -715,7 +713,7 @@ mod tests {
         let file = user_file(d.path());
         fs::write(&file, "source-map = [\"/nix/store/a=/a\"]\n").unwrap();
         let inline =
-            Env(|n| (n == "IETS_CONFIG").then(|| "source-map = [\"/nix/store/b=/b\"]".into()));
+            Env(&|n| (n == "IETS_CONFIG").then(|| "source-map = [\"/nix/store/b=/b\"]".into()));
         let o = opts(&[("source-map", "/nix/store/c=/c /nix/store/d=/d")]);
         let s = Settings::load_from(&file, &o, &inline).unwrap();
         let stores: Vec<&str> = s.source_map.iter().map(|(s, _)| s.as_str()).collect();
@@ -740,7 +738,7 @@ mod tests {
     #[test]
     fn builder_reads_all_three_forms() {
         let one = |text: &str| {
-            let env = Env(|n| (n == "IETS_CONFIG").then(|| "".into()));
+            let env = Env(&|n| (n == "IETS_CONFIG").then(|| "".into()));
             let d = tempdir().unwrap();
             let file = user_file(d.path());
             fs::write(&file, text).unwrap();
@@ -949,7 +947,7 @@ mod tests {
         assert!(NO_ENV.flag("X", None, true).unwrap());
         assert!(!NO_ENV.flag("X", Some(false), true).unwrap());
         assert!(NO_ENV.flag("X", Some(true), false).unwrap());
-        let zero = Env(|_| Some("0".into()));
+        let zero = Env(&|_| Some("0".into()));
         assert!(!zero.flag("X", Some(true), true).unwrap());
         for off in ["0", "no", "false"] {
             assert!(!env_bool("X", off.as_ref()).unwrap(), "{off}");
@@ -961,7 +959,7 @@ mod tests {
             let e = env_bool("X", bad.as_ref()).map(|_| ()).unwrap_err();
             assert_eq!(e.to_string(), format!("X: '{bad}' is not true or false"));
         }
-        let n = Env(|_| Some("abc".into())).num::<usize>("N");
+        let n = Env(&|_| Some("abc".into())).num::<usize>("N");
         assert_eq!(
             n.map(|_| ()).unwrap_err().to_string(),
             "N: 'abc' is not a number"

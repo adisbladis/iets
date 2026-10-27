@@ -103,7 +103,7 @@ impl LazyStore {
         if !self.tried {
             self.tried = true;
             let session = Session::current();
-            match Transport::parse(&nix_conf(&session).store()) {
+            match Transport::parse(&session.nix_conf().store()) {
                 Some(Transport::Grpc(_)) | None => {}
                 // a missing daemon is not an error: the input store holds the
                 // fetched inputs and evaluation writes no store
@@ -157,7 +157,7 @@ impl Validity {
 }
 
 pub(crate) fn local_daemon() -> Option<Connection> {
-    match Transport::parse(&nix_conf(&Session::current()).store())? {
+    match Transport::parse(&Session::current().nix_conf().store())? {
         t @ Transport::Unix(_) => Connection::open(&t, &mut |_| {}).ok(),
         _ => None,
     }
@@ -459,7 +459,7 @@ pub fn fetch_file(
     let staged = treestore::stage(sp.base_name())
         .ok_or_else(|| cannot("iets has no cache directory to hold it".into()))?;
     let mut spool = spool::Spool::create_in(staged.dir()).map_err(|e| cannot(e.to_string()))?;
-    let limits = Limits::new(nix_conf(ev.session())).map_err(|e| cannot(e.to_string()))?;
+    let limits = Limits::new(ev.session().nix_conf()).map_err(|e| cannot(e.to_string()))?;
     download(ev, url, local, &[], limits, false, &mut spool).map_err(|(kind, e)| {
         Error::boxed(kind, format!("unable to download '{shown}': {e}"), pos)
     })?;
@@ -562,13 +562,6 @@ fn adopt_file(ev: &mut Evaluator, sp: &StorePath, entry: &StoredTree, flat: Hash
         ),
     );
     treestore::record(ev, entry, sp.base_name());
-}
-
-/// nix.conf, read once: `store` for the eval store and `access-tokens` for the
-/// forge headers. The file cannot change under a running evaluation.
-pub fn nix_conf(s: &Session) -> &config::Config {
-    s.nix_conf
-        .get_or_init(|| config::Config::read(&[]).unwrap_or_else(|_| config::Config::empty()))
 }
 
 /// The types whose fetch is "download one archive and unpack it"
@@ -677,7 +670,7 @@ fn fetch_tarball(
 ) -> EvalResult<Arc<StoredTree>> {
     let name = input_name(ev, attrs);
     let fail = |e: String| Error::boxed(ErrorKind::Eval, e, pos);
-    let (url, headers) = tarball_url(nix_conf(ev.session()), attrs)
+    let (url, headers) = tarball_url(ev.session().nix_conf(), attrs)
         .map_err(|e| fail(format!("iets: cannot fetch input '{name}': {e}")))?;
     let expected = str_attr(attrs, "narHash")
         .and_then(|h| parse_nar_hash(h).ok())
@@ -698,7 +691,7 @@ fn fetch_tarball(
     })?;
     let mut spool = spool::Spool::create_in(staged.dir())
         .map_err(|e| fail(format!("iets: cannot fetch input '{name}': {e}")))?;
-    let limits = Limits::new(nix_conf(ev.session()))
+    let limits = Limits::new(ev.session().nix_conf())
         .map_err(|e| fail(format!("iets: cannot fetch input '{name}': {e}")))?;
     let local = local_file(ev, &url, pos)?;
     download(ev, &url, local, &headers, limits, true, &mut spool).map_err(|(kind, e)| {
