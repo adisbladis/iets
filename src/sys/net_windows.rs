@@ -14,6 +14,10 @@ impl UnixStream {
     pub fn try_clone(&self) -> io::Result<UnixStream> {
         Ok(UnixStream)
     }
+
+    pub fn shutdown(&self, _how: std::net::Shutdown) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 impl Read for UnixStream {
