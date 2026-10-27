@@ -642,7 +642,10 @@ fn realise(
 fn printable(e: &Error) -> bool {
     !matches!(
         e.kind,
-        ErrorKind::Unsupported | ErrorKind::StackOverflow | ErrorKind::Budget
+        ErrorKind::Unsupported
+            | ErrorKind::StackOverflow
+            | ErrorKind::Budget
+            | ErrorKind::Exhausted
     )
 }
 

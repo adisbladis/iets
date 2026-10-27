@@ -207,6 +207,7 @@ Why the layer exists, and when an operation is warranted:
 | How does a flake reference become bytes? | `docs/explanation/flakes-and-sources.md` |
 | Why is there a plumbing layer, and what did it cost? | `docs/explanation/plumbing-and-porcelain.md` |
 | Why trace a store path back to a file? | `docs/explanation/provenance.md` |
+| What happens when a session runs out of memory, and when does the process still stop? | `docs/explanation/out-of-memory.md` |
 | What was tried and removed? | `docs/explanation/history.md` |
 
 Reference material — every command, setting, error code, lint, builtin,

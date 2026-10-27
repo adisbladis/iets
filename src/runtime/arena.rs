@@ -8,7 +8,7 @@ use std::{ptr, slice};
 
 #[cfg(feature = "stats2")]
 use super::census::Census;
-use super::heap::Heap;
+use super::heap::{Exhausted, Heap};
 use super::value::{Ctx, ListObj};
 use super::word::Word;
 use crate::eval::MAX_CALL_DEPTH;
@@ -39,7 +39,7 @@ pub struct Arena {
     /// not add their 448 bytes to that move.
     folded: Box<Folded>,
     /// The depth `Evaluator::enter_call` allows: `MAX_CALL_DEPTH`, or 0 after
-    /// the memory host refused a chunk.
+    /// the memory host refused a chunk or the session was exhausted.
     pub(crate) call_limit: u32,
     /// String bytes by content, and the context-free string object over
     /// them once one was made (EMPTY until then). nixpkgs builds the same
@@ -109,14 +109,19 @@ impl Arena {
     }
 
     /// After a refusal, lifts the call limit if the host now allows the
-    /// group's size.
+    /// group's size. An exhausted session stays refused.
     #[cold]
     pub(crate) fn allowed_again(&mut self) -> bool {
-        if !self.heap.as_ref().is_none_or(|h| h.may_grow(0)) {
+        if self.exhausted().is_some() || !self.heap.as_ref().is_none_or(|h| h.may_grow(0)) {
             return false;
         }
         self.call_limit = MAX_CALL_DEPTH;
         true
+    }
+
+    /// Why this arena's session can go no further, if it can't.
+    pub(crate) fn exhausted(&self) -> Option<Exhausted> {
+        self.heap.as_ref()?.exhausted()
     }
 
     /// Whether a fold would carry anything. The placeholder arena never
@@ -221,6 +226,9 @@ impl Arena {
             self.call_limit = 0;
         }
         let base = map_chunk(heap, chunk) as *mut u8;
+        if heap.exhausted().is_some() {
+            self.call_limit = 0;
+        }
         heap.adopt(base as usize, chunk);
         self.mapped += chunk;
         self.ptr = base;

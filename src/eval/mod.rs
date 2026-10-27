@@ -736,10 +736,14 @@ impl Evaluator {
 
     /// Makes this evaluator's session the thread's until the guard drops, so
     /// what evaluation reads without an evaluator at hand (the settings,
-    /// nix.conf, the log, the tree store) is its own. The `api` calls that
-    /// take an evaluator, `api::value::Eval` and `parallel::try_run` do this
+    /// nix.conf, the log, the tree store) is its own. In an exhausted session
+    /// the evaluator's next call fails. The `api` calls that take an
+    /// evaluator, `api::value::Eval` and `parallel::try_run` do this
     /// themselves (docs/reference/library.md).
-    pub fn enter(&self) -> Entered {
+    pub fn enter(&mut self) -> Entered {
+        if self.session.heap.exhausted().is_some() {
+            self.arena.call_limit = 0;
+        }
         self.session.enter()
     }
 
@@ -1606,18 +1610,21 @@ impl Evaluator {
         Ok(())
     }
 
-    /// The depth passed `arena.call_limit`: a stack overflow, or a refused
-    /// chunk. After a refusal the call goes on if the host now allows it.
+    /// The depth passed `arena.call_limit`: a stack overflow, a refused
+    /// chunk or an exhausted session. After a refusal the call goes on if
+    /// the host now allows it.
     #[cold]
     fn call_refused(&mut self, pos: Pos) -> EvalResult<()> {
         if self.call_depth <= MAX_CALL_DEPTH && self.arena.allowed_again() {
             return Ok(());
         }
         self.call_depth -= 1;
-        Err(if self.call_depth < MAX_CALL_DEPTH {
-            Error::budget(pos)
-        } else {
-            Error::stack_overflow(pos)
+        if self.call_depth >= MAX_CALL_DEPTH {
+            return Err(Error::stack_overflow(pos));
+        }
+        Err(match self.arena.exhausted() {
+            Some(why) => Error::exhausted(why, pos),
+            None => Error::budget(pos),
         })
     }
 
