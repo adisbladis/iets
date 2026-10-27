@@ -30,30 +30,32 @@ use crate::{config, error, treestore};
 
 #[derive(Default)]
 pub struct Session {
+    /// Where this run's messages go: nowhere until the host says
+    /// (docs/reference/library.md).
     pub log: Log,
-    pub env: Env,
-    pub command: Mutex<Option<&'static str>>,
-    pub catch_exit: AtomicBool,
-    pub out: Stdout,
+    pub(crate) env: Env,
+    pub(crate) command: Mutex<Option<&'static str>>,
+    pub(crate) catch_exit: AtomicBool,
+    pub(crate) out: Stdout,
     /// This run's sampled flame graph (`crate::profile`).
-    pub profile: Profile,
+    pub(crate) profile: Profile,
     /// Where this run's instrumentation events go (`crate::events`).
-    pub events: Events,
+    pub(crate) events: Events,
     settings: OnceLock<Settings>,
     /// What this run was asked for and does not do (`crate::ignored`).
-    pub ignored: Ignored,
+    pub(crate) ignored: Ignored,
     /// The local tree store this run reads fetched trees from
     /// (`crate::treestore`).
-    pub trees: treestore::Store,
+    pub(crate) trees: treestore::Store,
     /// The `eval-jobs` walk of this run (`crate::jobs`).
-    pub jobs: Run,
+    pub(crate) jobs: Run,
     /// nix.conf, read once per run: it cannot change under an evaluation.
-    pub nix_conf: OnceLock<config::Config>,
+    pub(crate) nix_conf: OnceLock<config::Config>,
     /// Store path to local tree, for the commands that build the map while
     /// the evaluation is live (`crate::provenance`).
-    pub source_map: OnceLock<SourceMap>,
+    pub(crate) source_map: OnceLock<SourceMap>,
     /// The `parse-toml-timestamps` experimental feature.
-    pub toml_timestamps: AtomicBool,
+    pub(crate) toml_timestamps: AtomicBool,
     /// Every arena chunk and symbol name of this session's evaluators.
     /// Released when the last of the session, its evaluators and its
     /// worker threads lets go (docs/reference/library.md).
