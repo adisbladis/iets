@@ -13,7 +13,6 @@ use crate::eval::{Error, ErrorKind, EvalResult, Evaluator, Pos, bail};
 use crate::fetch::http::{self, Limits};
 use crate::runtime::{Value, Word};
 use crate::session::Session;
-use crate::source::nix_conf;
 use crate::store::narinfo::{Fetched, NarInfo};
 use crate::store::path::StorePath;
 use crate::trace;
@@ -159,7 +158,7 @@ fn walk(
     pos: Pos,
 ) -> EvalResult<BTreeMap<StorePath, NarInfo>> {
     let session = ev.session().clone();
-    let cfg = nix_conf(&session);
+    let cfg = session.nix_conf();
     let fail = |msg: String| Box::new(Error::new(ErrorKind::Eval, msg, pos));
     let limits = Limits::new(cfg).map_err(|e| fail(e.to_string()))?;
     let keys = cfg.trusted_public_keys();

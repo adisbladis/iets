@@ -95,9 +95,10 @@ pub fn try_run<R: Send + 'static>(
     mut ev: Evaluator,
     f: impl FnOnce(&mut Evaluator) -> R + Send + 'static,
 ) -> Result<R, fiber::StackError> {
-    // the input store reads the current session, and the workers inherit it
-    // so their arenas map into its heap
-    let _entered = ev.session().clone().enter();
+    // the evaluator and the input store read the evaluator's session
+    // wherever this thread is, and the workers inherit it, so their arenas
+    // map into its heap
+    let _entered = ev.enter();
     if workers <= 1 {
         let r = f(&mut ev);
         ev.lints.flush();

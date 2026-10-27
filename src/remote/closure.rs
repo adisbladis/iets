@@ -15,7 +15,6 @@ use crate::error::{Error, Result};
 use crate::fetch::http::{self, Limits};
 use crate::remote::plan::Object;
 use crate::session::{self, Session};
-use crate::source::nix_conf;
 use crate::store::narinfo::Fetched;
 use crate::store::path::StorePath;
 
@@ -114,7 +113,7 @@ pub fn send<C>(
     if missing.is_empty() {
         return Ok(0);
     }
-    let limits = Limits::new(nix_conf(&Session::current()))?;
+    let limits = Limits::new(Session::current().nix_conf())?;
     let index: HashMap<&StorePath, usize> = missing
         .iter()
         .enumerate()
@@ -291,7 +290,7 @@ fn download(paths: &[Arc<Fetched>]) -> Result<Vec<TempPath>> {
     if paths.is_empty() {
         return Ok(Vec::new());
     }
-    let limits = Limits::new(nix_conf(&Session::current()))?;
+    let limits = Limits::new(Session::current().nix_conf())?;
     let mut by_size: Vec<usize> = (0..paths.len()).collect();
     by_size.sort_by_key(|&i| Reverse(paths[i].info.file_size));
     let jobs = thread::available_parallelism()
