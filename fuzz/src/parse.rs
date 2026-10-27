@@ -38,7 +38,7 @@ impl Parse {
     pub fn new(known: Vec<known::Entry>) -> Parse {
         Parse {
             oracle: Oracle::from_env("IETS_PARSE_ORACLE", "parse-oracle"),
-            interner: Interner::new(),
+            interner: Interner::new().unwrap(),
             known,
         }
     }
@@ -134,7 +134,7 @@ impl Target for Parse {
         // with fresh tables. The restart costs milliseconds; only a bug
         // pays it.
         self.oracle.restart();
-        self.interner = Interner::new();
+        self.interner = Interner::new().unwrap();
         let d = self.compare(src);
         classify(&self.known, d, src)
     }

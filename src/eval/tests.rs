@@ -16,11 +16,11 @@ fn eval_with(mut ev: Evaluator, src: &str) -> Result<String, String> {
 }
 
 fn eval_str(src: &str) -> String {
-    eval_with(Evaluator::new(), src).unwrap_or_else(|e| panic!("{src:?}: {e}"))
+    eval_with(Evaluator::new().unwrap(), src).unwrap_or_else(|e| panic!("{src:?}: {e}"))
 }
 
 fn eval_err(src: &str) -> String {
-    eval_with(Evaluator::new(), src).expect_err("expected an error")
+    eval_with(Evaluator::new().unwrap(), src).expect_err("expected an error")
 }
 
 #[rstest]
@@ -103,7 +103,7 @@ fn empty_literals(#[case] src: &str, #[case] want: &str) {
 
 #[test]
 fn every_empty_list_and_set_is_one_object() {
-    let mut ev = Evaluator::new();
+    let mut ev = Evaluator::new().unwrap();
     let list = ev.mk_list(&[]);
     let attrs = ev.empty_attrs();
     let made = ev
@@ -262,7 +262,7 @@ fn reading_a_derivation_output_is_unsupported(
     f: &str,
 ) {
     let drv = r#"(derivation { name = "x"; system = "x86_64-linux"; builder = "/bin/sh"; })"#;
-    let mut ev = Evaluator::new();
+    let mut ev = Evaluator::new().unwrap();
     let e = ev
         .eval_string(&format!("{f} {drv}"), b"/")
         .and_then(|v| ev.force_deep(v))
@@ -272,7 +272,7 @@ fn reading_a_derivation_output_is_unsupported(
 
 #[test]
 fn fetch_mercurial_names_a_way_out() {
-    let mut ev = Evaluator::new();
+    let mut ev = Evaluator::new().unwrap();
     let e = ev
         .eval_string("builtins.fetchMercurial /tmp", b"/")
         .unwrap_err();
@@ -287,7 +287,7 @@ fn fetch_mercurial_names_a_way_out() {
 /// on darwin asks for a darwin shell.
 #[test]
 fn eval_config_defaults_to_the_system_this_build_is_for() {
-    let system = EvalConfig::new().build().current_system();
+    let system = EvalConfig::new().build().unwrap().current_system();
     let os = if cfg!(target_os = "macos") {
         "darwin"
     } else if cfg!(target_os = "windows") {
@@ -299,7 +299,7 @@ fn eval_config_defaults_to_the_system_this_build_is_for() {
 }
 
 fn eval_pure(src: &str) -> Result<String, String> {
-    eval_with(EvalConfig::new().pure(true).build(), src)
+    eval_with(EvalConfig::new().pure(true).build().unwrap(), src)
 }
 
 /// The answers of `nix-instantiate --pure-eval --read-write-mode` (Nix 2.34.8).
@@ -432,7 +432,7 @@ fn fetchurl_needs_a_sha256_in_every_mode(
     src: &str,
 ) {
     let want = "'fetchurl' requires a 'sha256' argument: run 'iets prefetch https://example.com/x' and pass the hash as 'sha256'";
-    let mut ev = EvalConfig::new().pure(pure).build();
+    let mut ev = EvalConfig::new().pure(pure).build().unwrap();
     let e = ev.eval_string(src, b"/").unwrap_err();
     let kind = if pure {
         ErrorKind::Eval
@@ -538,7 +538,7 @@ fn derivation_keeps_env_and_args_that_are_not_utf8(#[case] attrs: &str, #[case] 
 /// `«string»:1:3` for the throw (Nix 2.34.8).
 #[test]
 fn a_second_pseudo_file_keeps_its_own_positions() {
-    let mut ev = Evaluator::new();
+    let mut ev = Evaluator::new().unwrap();
     ev.eval_string("\n\n1", b"/").expect("eval");
     let e = ev.eval_string("  throw \"b\"", b"/").unwrap_err();
     assert_eq!(ev.describe_pos(e.pos), "«string»:1:3");
@@ -568,7 +568,7 @@ fn an_invalid_regex_fails_before_the_string_is_forced(#[values("match", "split")
 #[test]
 fn nix_eq_forces_what_the_shortcut_skips() {
     let eq = |src: &str| {
-        let mut ev = Evaluator::new();
+        let mut ev = Evaluator::new().unwrap();
         ev.nix_eq = true;
         eval_with(ev, src)
     };

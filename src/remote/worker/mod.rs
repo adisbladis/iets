@@ -1475,7 +1475,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join("socket");
         let reached = slow_daemon(&sock, stall);
-        let mut ev = crate::eval::Evaluator::new();
+        let mut ev = crate::eval::Evaluator::new().unwrap();
         let expr =
             r#"(derivation { name = "x"; system = "x86_64-linux"; builder = "/bin/sh"; }).drvPath"#;
         let w = ev

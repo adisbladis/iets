@@ -384,7 +384,7 @@ mod tests {
     use crate::session::Session;
 
     fn eval<R>(src: &str, f: impl for<'e> FnOnce(&mut Eval<'e>, Value<'e>) -> R) -> R {
-        let mut ev = Evaluator::new();
+        let mut ev = Evaluator::new().unwrap();
         let mut e = Eval::new(&mut ev);
         let v = e.eval_expr(src, b"/").expect("eval");
         f(&mut e, v)
@@ -599,7 +599,7 @@ mod tests {
 
     #[test]
     fn a_kept_value_is_read_under_a_later_borrow() {
-        let mut ev = Evaluator::new();
+        let mut ev = Evaluator::new().unwrap();
         let k = kept(&mut ev, r#"{ s = "x"; l = [ 1 2 ]; }"#);
         let mut e = Eval::new(&mut ev);
         let v = e.get(&k).unwrap();
@@ -622,7 +622,7 @@ mod tests {
             ),
         ];
         for (src, want) in cases {
-            let mut ev = Evaluator::new();
+            let mut ev = Evaluator::new().unwrap();
             let set = kept(&mut ev, &src);
             let t = {
                 let mut e = Eval::new(&mut ev);
@@ -652,7 +652,7 @@ mod tests {
 
     #[test]
     fn a_kept_set_is_read_by_name_many_times() {
-        let mut ev = Evaluator::new();
+        let mut ev = Evaluator::new().unwrap();
         let n = 200;
         let src = format!(
             r#"builtins.listToAttrs (builtins.genList (i: {{ name = "a${{toString i}}"; value = i * i; }}) {n})"#
@@ -674,7 +674,7 @@ mod tests {
 
     #[test]
     fn an_error_under_one_borrow_leaves_the_thunk_for_the_next() {
-        let mut ev = Evaluator::new();
+        let mut ev = Evaluator::new().unwrap();
         let set = kept(&mut ev, r#"{ bad = throw "no"; good = 1; }"#);
         for _ in 0..2 {
             // put back, not left claimed: a claimed thunk would report
@@ -690,7 +690,7 @@ mod tests {
     #[test]
     fn a_thunk_refused_under_one_borrow_succeeds_under_the_next() {
         let s = Session::new();
-        let mut ev = EvalConfig::new().session(s.clone()).build();
+        let mut ev = EvalConfig::new().session(s.clone()).build().unwrap();
         // each step copies the list, about 64 MB in all
         let grow = "builtins.foldl' (acc: i: acc ++ [ i ]) [ ] (builtins.genList (x: x) 4000)";
         let set = kept(&mut ev, &format!("{{ n = builtins.length ({grow}); }}"));
@@ -706,8 +706,8 @@ mod tests {
     #[test]
     fn a_kept_value_is_read_only_through_its_evaluator() {
         let s = Session::new();
-        let mut a = EvalConfig::new().session(s.clone()).build();
-        let mut b = EvalConfig::new().session(s).build();
+        let mut a = EvalConfig::new().session(s.clone()).build().unwrap();
+        let mut b = EvalConfig::new().session(s).build().unwrap();
         let k = kept(&mut a, "{ x = 1; }");
         // same session, but the names are ids in `a`'s table
         assert!(Eval::new(&mut b).get(&k).is_none());
@@ -723,7 +723,7 @@ mod tests {
             let s = Session::new();
             s.heap.join(&group);
             s.heap.set_release(release);
-            let mut ev = EvalConfig::new().session(s.clone()).build();
+            let mut ev = EvalConfig::new().session(s.clone()).build().unwrap();
             let k = kept(&mut ev, "builtins.genList (i: { n = i; }) 100");
             let at = k.w.bits() as usize & 0xffff_ffff_fff8;
             let unmapped = UNMAPPED.with(|u| u.get());
@@ -733,7 +733,7 @@ mod tests {
             assert_eq!(is_released(at), release == Release::Revoke);
             let gone = UNMAPPED.with(|u| u.get()) - unmapped;
             assert_eq!(gone > 0, release == Release::Unmap);
-            let mut other = Evaluator::new();
+            let mut other = Evaluator::new().unwrap();
             assert!(Eval::new(&mut other).get(&k).is_none());
         }
     }

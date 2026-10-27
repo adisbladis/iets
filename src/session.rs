@@ -338,8 +338,8 @@ mod tests {
             )
         };
         let (mut ev_a, mut ev_b) = (
-            EvalConfig::new().session(a.clone()).build(),
-            EvalConfig::new().session(b.clone()).build(),
+            EvalConfig::new().session(a.clone()).build().unwrap(),
+            EvalConfig::new().session(b.clone()).build().unwrap(),
         );
         let refused = evaluate(&mut ev_a, &fetch("a")).err();
         assert_eq!(refused, Some(ErrorKind::Offline));
@@ -353,7 +353,7 @@ mod tests {
     }
 
     fn eval_in(s: &Arc<Session>, expr: &str) -> (Evaluator, Word) {
-        let mut ev = EvalConfig::new().session(s.clone()).build();
+        let mut ev = EvalConfig::new().session(s.clone()).build().unwrap();
         let a = EvalArgs {
             input: Some(Input::Expr(expr.into())),
             no_ir_cache: true,
@@ -390,7 +390,7 @@ mod tests {
     #[test]
     fn a_parallel_run_releases_its_session() {
         let s = Session::new();
-        let ev = EvalConfig::new().session(s.clone()).build();
+        let ev = EvalConfig::new().session(s.clone()).build().unwrap();
         let at = parallel::try_run(4, ev, |ev| {
             let a = EvalArgs {
                 input: Some(Input::Expr(EXPR.into())),
@@ -434,7 +434,7 @@ mod tests {
         let group = MemoryGroup::new(Limit(limit.clone()));
         let s = Session::new();
         s.heap.join(&group);
-        let mut ev = EvalConfig::new().session(s.clone()).build();
+        let mut ev = EvalConfig::new().session(s.clone()).build().unwrap();
         let held = group.bytes();
         assert_eq!(held, s.heap.bytes());
         limit.store(held + (40 << 20), Ordering::Relaxed);
@@ -466,7 +466,7 @@ mod tests {
         let group = MemoryGroup::new(Limit(limit.clone()));
         let s = Session::new();
         s.heap.join(&group);
-        let ev = EvalConfig::new().session(s.clone()).build();
+        let ev = EvalConfig::new().session(s.clone()).build().unwrap();
         limit.store(group.bytes() + (64 << 20), Ordering::Relaxed);
         let grow = "builtins.foldl' (acc: i: acc ++ [ i ]) [ ] (builtins.genList (x: x) 3000)";
         let expr = format!("builtins.deepSeq (builtins.genList (i: {grow}) 64) 0");
@@ -490,7 +490,7 @@ mod tests {
     fn a_session_out_of_memory_fails_and_the_process_goes_on() {
         let _reserve = heap::tests::spending_the_reserve();
         let s = Session::new();
-        let mut ev = EvalConfig::new().session(s.clone()).build();
+        let mut ev = EvalConfig::new().session(s.clone()).build().unwrap();
         // each step copies the list and is a call
         let grow = "builtins.length (builtins.foldl' (acc: i: acc ++ [ i ]) [ ] (builtins.genList (x: x) 20000))";
         heap::tests::FAIL_MAPS.with(|f| f.set(2));
@@ -509,7 +509,7 @@ mod tests {
     #[test]
     fn a_session_past_the_symbol_limit_fails() {
         let s = Session::new();
-        let mut ev = EvalConfig::new().session(s.clone()).build();
+        let mut ev = EvalConfig::new().session(s.clone()).build().unwrap();
         ev.interner.skip_to_for_test(SOFT_SYMS - 3);
         let names = r#"builtins.attrNames (builtins.listToAttrs (map (i: { name = "n${toString i}"; value = i; }) (builtins.genList (x: x) 10)))"#;
         let _ = evaluate(&mut ev, names);

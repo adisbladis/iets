@@ -65,6 +65,13 @@ dash means the code has no kind of its own.
 | `no-output` | — | `iets build`: a root put no store path on stdout: nothing to build, no build result, or no such output (`docs/reference/commands.md`) |
 | `build-failed` | build status | a build that failed |
 
+A run that cannot reserve its memory before it evaluates has no code. When
+strict overcommit or an address space limit refuses the fiber stacks or a
+symbol table, `iets` prints one line, such as `iets: cannot reserve 8192 MiB
+for the table of symbol names: Cannot allocate memory (os error 12)`, and
+exits 1 (`docs/explanation/out-of-memory.md`). A library host gets the
+error instead: `api::StackError` or `api::TableError`.
+
 ## Hints
 
 You get a `hint` only when iets is sure of the fix:

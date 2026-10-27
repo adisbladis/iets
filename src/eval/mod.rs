@@ -28,6 +28,7 @@ use crate::events::{self, Field, Group};
 use crate::lint::allow::Allows;
 use crate::lint::coerce::{or_non_attrs, read_through_copy};
 use crate::lint::{self, Diag, Lints, purity};
+use crate::parallel::interner::TableError;
 use crate::parallel::shared::{ArenaUse, Counts, Files, SharedMap, SymWords, Totals};
 use crate::profile::{self, Stack};
 use crate::runtime::arena::{self, STAT_NAMES, Stat};
@@ -106,11 +107,11 @@ impl FileInfo {
     }
 
     /// The source `read` gives and its tree; `None` when there is no source
-    /// to read or it does not parse.
+    /// to read, no symbol table to parse it into, or it does not parse.
     pub fn parsed(&self, read: impl FnOnce() -> Option<Vec<u8>>) -> Option<&(Vec<u8>, Ast)> {
         let parse = || {
             let src = read()?;
-            let ast = syntax::parse(&src, FileId(0), &mut Interner::new()).ok()?;
+            let ast = syntax::parse(&src, FileId(0), &mut Interner::new().ok()?).ok()?;
             Some((src, ast))
         };
         self.parsed.get_or_init(parse).as_ref()
@@ -428,7 +429,7 @@ fn static_system(system: &str) -> &'static str {
 /// the evaluator is one fiber's alone, so there is no setter (docs/explanation/evaluation.md).
 ///
 /// ```compile_fail
-/// let mut ev = iets::eval::Evaluator::new();
+/// let mut ev = iets::eval::Evaluator::new().unwrap();
 /// ev.pure = true;
 /// ```
 #[derive(Clone)]
@@ -592,15 +593,20 @@ impl EvalConfig {
 
     /// `system` and `pure-eval` shape the builtins, so they are fixed
     /// before `builtins::install` (docs/reference/settings.md).
-    pub fn build(self) -> Evaluator {
-        if !self.pure {
-            prefetch_store_entries(&self.search_path, &self.session);
-        }
+    ///
+    /// The error is a per-symbol table the kernel refused, which strict
+    /// overcommit can do (docs/explanation/out-of-memory.md). The tables are
+    /// mapped first, so a refusal leaves nothing in the session.
+    pub fn build(self) -> Result<Evaluator, TableError> {
         // the builtins read the settings of this session, not the thread's
         let session = self.session.clone();
         let _entered = session.enter();
+        let mut interner = Interner::in_heap(self.session.heap.clone())?;
+        let sym_strings = SymWords::new()?;
+        if !self.pure {
+            prefetch_store_entries(&self.search_path, &self.session);
+        }
         let mut arena = Arena::in_heap(self.session.heap.clone());
-        let mut interner = Interner::in_heap(self.session.heap.clone());
         for name in NIX_STATIC_SYMBOLS {
             interner.intern(name);
         }
@@ -652,7 +658,7 @@ impl EvalConfig {
             t_compile: Duration::ZERO,
             totals: Default::default(),
             fold_arenas: self.session.settings().stats >= 1,
-            sym_strings: SymWords::new(),
+            sym_strings,
             src_to_store: Default::default(),
             known: Default::default(),
             input_names: Default::default(),
@@ -680,12 +686,14 @@ impl EvalConfig {
         if ev.session.profile.on() {
             ev.session.profile.names(&ev.files, &ev.interner);
         }
-        ev
+        Ok(ev)
     }
 }
 
 impl Evaluator {
-    pub fn new() -> Evaluator {
+    /// `EvalConfig::new().build()`: the defaults, in the session this thread
+    /// entered.
+    pub fn new() -> Result<Evaluator, TableError> {
         EvalConfig::new().build()
     }
 
@@ -2801,12 +2809,6 @@ impl Evaluator {
                 y
             ),
         }
-    }
-}
-
-impl Default for Evaluator {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

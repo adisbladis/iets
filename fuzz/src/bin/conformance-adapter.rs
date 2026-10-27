@@ -70,7 +70,7 @@ fn parse(file: &str) -> i32 {
     let Ok(src) = fs::read(file) else {
         return 2;
     };
-    let mut interner = Interner::new();
+    let mut interner = Interner::new().unwrap();
     match syntax::parse(&src, FileId(0), &mut interner) {
         Ok(ast) => {
             let tree = sx::normalise(canon::tree(&ast, &interner));

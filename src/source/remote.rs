@@ -1177,7 +1177,7 @@ mod tests {
         ]);
         let session = Session::with_env(env);
         let _entered = session.enter();
-        let mut ev = EvalConfig::new().session(session.clone()).build();
+        let mut ev = EvalConfig::new().session(session.clone()).build().unwrap();
         let a = EvalArgs {
             input: Some(Input::Expr(expr)),
             no_ir_cache: true,

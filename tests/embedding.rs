@@ -2,9 +2,9 @@
 //! session of its own with an isolated environment and bounded memory, a
 //! pure evaluator on the demand fiber's stack, a value kept across borrows,
 //! the upload plan of what the evaluation made, an upload the host cancels,
-//! and the error kinds it tells apart (docs/explanation/embedding-surface.md).
-//! The file names no other module of the crate, and its last test holds it
-//! to that.
+//! the error kinds it tells apart, and an evaluator whose symbol tables the
+//! kernel refuses (docs/explanation/embedding-surface.md). The file names no
+//! other module of the crate, and its last test holds it to that.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -16,7 +16,7 @@ use iets::api::memory::{Exhausted, Heap, MemoryGroup, MemoryHost, Release};
 use iets::api::value::{Eval, Kept, Value};
 use iets::api::{
     self, Cancel, Env, Error, ErrorKind, EvalConfig, EvalError, EvalResult, Evaluator, Report,
-    Session, StorePath,
+    Session, StorePath, TableError,
 };
 use tempfile::tempdir;
 
@@ -56,6 +56,7 @@ fn evaluator(session: &Arc<Session>) -> Evaluator {
         .keep_site(false)
         .no_lints()
         .build()
+        .expect("the symbol tables are reserved")
 }
 
 /// `f` on the stack the demand fiber has, so a deep evaluation meets the
@@ -188,6 +189,83 @@ fn a_host_tells_the_error_kinds_apart() {
         assert_eq!(session.heap.exhausted(), None::<Exhausted>);
         eval(&mut ev, "(x: x + 1) 1").expect("evaluates");
     });
+}
+
+/// The address space this process has mapped, `VmSize`, in bytes.
+#[cfg(target_os = "linux")]
+fn address_space() -> u64 {
+    let status = fs::read_to_string("/proc/self/status").unwrap();
+    let line = status.lines().find(|l| l.starts_with("VmSize:")).unwrap();
+    let kb: u64 = line.split_whitespace().nth(1).unwrap().parse().unwrap();
+    kb << 10
+}
+
+/// Sets this process's soft `RLIMIT_AS`, and returns the one before.
+#[cfg(target_os = "linux")]
+fn limit_address_space(bytes: libc::rlim_t) -> libc::rlim_t {
+    // SAFETY: the calls read and write the struct they are given.
+    unsafe {
+        let mut limit: libc::rlimit = std::mem::zeroed();
+        assert_eq!(libc::getrlimit(libc::RLIMIT_AS, &mut limit), 0);
+        let before = limit.rlim_cur;
+        limit.rlim_cur = bytes;
+        assert_eq!(libc::setrlimit(libc::RLIMIT_AS, &limit), 0);
+        before
+    }
+}
+
+/// Strict overcommit charges each of an evaluator's three symbol tables in
+/// full, 8 GiB apiece, so a host near its commit limit is refused one. An
+/// address space limit stands in for it in a child process. Under the limit,
+/// building an evaluator returns the error naming the table it could not
+/// reserve, and leaves nothing behind: the tables mapped before it are gone,
+/// as the same refusal again shows, and the session holds no memory. With
+/// the limit lifted, the same session builds an evaluator that evaluates.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_symbol_table_the_kernel_refuses_is_an_error() {
+    if std::env::var_os("IETS_TEST_TABLE_CHILD").is_some() {
+        let session = Session::with_env(Env::isolated());
+        for (room, table) in [(4u64, "names"), (12, "name prefixes"), (20, "strings")] {
+            let before = limit_address_space(address_space() + (room << 30));
+            for _ in 0..2 {
+                let built = EvalConfig::new().session(session.clone()).build();
+                let e: TableError = built.err().expect("a table is refused");
+                assert_eq!(e.table, table, "{e}");
+                println!("{e}");
+            }
+            limit_address_space(before);
+        }
+        assert_eq!(
+            session.heap.bytes(),
+            0,
+            "a refusal left memory in the session"
+        );
+        assert_eq!(session.heap.exhausted(), None::<Exhausted>);
+        let mut ev = EvalConfig::new()
+            .session(session)
+            .build()
+            .expect("no limit");
+        let mut e = Eval::new(&mut ev);
+        let v = e.eval_expr("1 + 1", b"/").expect("evaluates");
+        assert_eq!(e.force(v).expect("forces").as_int(), Some(2));
+        std::process::exit(0);
+    }
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "a_symbol_table_the_kernel_refuses_is_an_error",
+            "--nocapture",
+        ])
+        .env("IETS_TEST_TABLE_CHILD", "1")
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout) + String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{text}");
+    for table in ["names", "name prefixes", "strings"] {
+        let said = format!("cannot reserve 8192 MiB for the table of symbol {table}: ");
+        assert_eq!(text.matches(&said).count(), 2, "{text}");
+    }
 }
 
 /// The calls above compile against `api` alone only while this file names no

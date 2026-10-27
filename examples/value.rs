@@ -36,7 +36,13 @@ fn main() -> ExitCode {
         Some(f) => die(&format!("unknown flag {f}")),
     };
 
-    let mut evaluator = Evaluator::new();
+    let mut evaluator = match Evaluator::new() {
+        Ok(ev) => ev,
+        Err(err) => {
+            eprintln!("value: {err}");
+            return ExitCode::from(1);
+        }
+    };
     let mut e = Eval::new(&mut evaluator);
     let root = match e.eval_expr(&src, b"/").and_then(|v| e.force(v)) {
         Ok(v) => v,

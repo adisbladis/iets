@@ -26,7 +26,7 @@ use crate::remote::worker::{Options, Transport};
 use crate::runtime::{Value, Word};
 use crate::store::path::StorePath;
 use crate::syntax::symbol::FxHashSet;
-use crate::{config, error, ignored, print, session};
+use crate::{config, error, ignored, log, print, session};
 
 const NAME: &str = "nix";
 /// filetransfer.hh: the default of `http-connections`.
@@ -447,7 +447,15 @@ fn prefetch_inputs_main(argv: &[String], rest: &[String]) -> i32 {
         for _ in 0..threads {
             s.spawn(session::bind(|| {
                 while let Some((name, r)) = queue.lock().unwrap().next() {
-                    let mut ev = EvalConfig::new().system(&system).pure(true).build();
+                    let built = EvalConfig::new().system(&system).pure(true).build();
+                    let mut ev = match built {
+                        Ok(ev) => ev,
+                        Err(e) => {
+                            log::line(&format!("iets: {e}"));
+                            failed.store(true, Ordering::Relaxed);
+                            return;
+                        }
+                    };
                     if let Some(h) = r.nar_hash() {
                         ev.input_names.insert(h.to_string(), name);
                     }

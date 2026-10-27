@@ -26,6 +26,7 @@ fn evaluator(s: &Arc<Session>) -> Evaluator {
         .session(s.clone())
         .keep_site(false)
         .build()
+        .unwrap_or_else(|err| die(&err.to_string()))
 }
 
 fn apply<'e>(e: &mut Eval<'e>, src: &str) -> Value<'e> {

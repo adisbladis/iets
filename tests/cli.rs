@@ -422,22 +422,25 @@ fn a_full_stdout_is_an_error(bin: Iets, #[case] args: &[&str]) {
     assert!(err.contains("No space left on device"), "{err}");
 }
 
-/// Strict overcommit refuses the main stack's reservation where its commit
-/// limit has no room, as an address space limit below it does here: `iets`
-/// names what it could not reserve and exits 1, never a crash.
+/// Strict overcommit refuses a reservation where its commit limit has no
+/// room, as an address space limit does here: below 4 GiB the main stack's,
+/// below the 8 GiB more a symbol table takes the table's. `iets` names what
+/// it could not reserve and exits 1, never a crash.
 #[cfg(target_os = "linux")]
 #[rstest]
-fn a_main_stack_the_kernel_refuses_is_an_error(bin: Iets) {
+#[case(2 << 30, "iets: cannot reserve 4096 MiB of fiber stacks: ")]
+#[case(8 << 30, "iets: cannot reserve 8192 MiB for the table of symbol names: ")]
+fn memory_the_kernel_refuses_is_an_error(bin: Iets, #[case] limit: u64, #[case] said: &str) {
     use std::io;
     use std::os::unix::process::CommandExt;
     let mut c = bin.cmd();
     c.args(["eval", "-E", "1"]);
     // SAFETY: the closure makes one async-signal-safe call and allocates nothing.
     unsafe {
-        c.pre_exec(|| {
+        c.pre_exec(move || {
             let limit = libc::rlimit {
-                rlim_cur: 2 << 30,
-                rlim_max: 2 << 30,
+                rlim_cur: limit,
+                rlim_max: limit,
             };
             match libc::setrlimit(libc::RLIMIT_AS, &limit) {
                 0 => Ok(()),
@@ -448,7 +451,7 @@ fn a_main_stack_the_kernel_refuses_is_an_error(bin: Iets) {
     let o = c.output().unwrap();
     let err = stderr(&o);
     assert_eq!(o.status.code(), Some(1), "{err}");
-    assert!(err.starts_with("iets: cannot reserve 4096 MiB"), "{err}");
+    assert!(err.starts_with(said), "{err}");
 }
 
 #[rstest]

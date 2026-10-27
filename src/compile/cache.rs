@@ -1535,7 +1535,7 @@ mod tests {
 
     /// A valid entry for `SRC`, with the evaluator that made it.
     fn entry() -> (Evaluator, Vec<u8>, u32, u32) {
-        let mut ev = Evaluator::new();
+        let mut ev = Evaluator::new().unwrap();
         let file = ev.add_file(PATH, SRC.as_bytes());
         let base = ev.files[file.0 as usize].base;
         let ir = ev
@@ -1636,7 +1636,7 @@ mod tests {
         ];
         for (n, src) in CASES.iter().enumerate() {
             let path = format!("/t/fuzz{n}.nix").into_bytes();
-            let mut ev = Evaluator::new();
+            let mut ev = Evaluator::new().unwrap();
             let file = ev.add_file(&path, src.as_bytes());
             let base = ev.files[file.0 as usize].base;
             let span = src.len() as u32;

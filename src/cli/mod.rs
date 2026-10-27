@@ -21,9 +21,11 @@ pub mod render;
 pub mod run;
 pub mod search;
 
+use std::fmt::Display;
+
 use help::{arg_error, each_arg};
 
-use crate::api::{self, StackError, flake};
+use crate::api::{self, flake};
 use crate::eval::{Error, Evaluator};
 use crate::lint::{self, Level, Scope};
 use crate::log::{self, Activity};
@@ -269,13 +271,14 @@ pub fn run_for(a: &EvalArgs) -> Run {
     }
 }
 
-/// `api::Run::go` for a command line: the fiber stacks are a startup
-/// failure, so it reports them and exits 1. The library returns the error.
+/// `api::Run::go` for a command line: a symbol table or the fiber stacks it
+/// cannot reserve are a startup failure, so it reports them and exits 1. The
+/// library returns the error.
 pub fn run_parallel<R: Send + 'static>(
     run: Run,
     f: impl FnOnce(&mut Evaluator, Option<Cache>) -> R + Send + 'static,
 ) -> R {
-    run.go(f).unwrap_or_else(stacks)
+    run.go(f).unwrap_or_else(unreserved)
 }
 
 /// The same for `api::Run::eval`.
@@ -283,11 +286,12 @@ pub fn run_reported<T: Send + 'static>(
     run: Run,
     f: impl FnOnce(&mut Evaluator, Option<Cache>) -> error::Result<T> + Send + 'static,
 ) -> Outcome<T> {
-    run.eval(f).unwrap_or_else(stacks)
+    run.eval(f).unwrap_or_else(unreserved)
 }
 
-/// A stack the command could not reserve, reported: exit 1.
-pub(crate) fn stacks<R>(e: StackError) -> R {
+/// Memory the command could not reserve before it evaluated, a stack or a
+/// symbol table, reported: exit 1.
+pub(crate) fn unreserved<R>(e: impl Display) -> R {
     log::line(&format!("iets: {e}"));
     session::exit(1)
 }

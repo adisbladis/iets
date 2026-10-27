@@ -121,7 +121,7 @@ fn a_copied_path_is_uploaded_with_its_references() {
         fs::write(p, text).unwrap();
     }
     let session = Session::with_env(Env::isolated());
-    let mut ev = EvalConfig::new().session(session.clone()).build();
+    let mut ev = EvalConfig::new().session(session.clone()).build().unwrap();
 
     // each kind of copy, by the expression that makes it
     let cases = [
@@ -210,6 +210,7 @@ fn a_copied_path_is_uploaded_with_its_references() {
     unknown(&StorePath::from_base_name(&base).unwrap(), &ev);
     let fresh = EvalConfig::new()
         .session(Session::with_env(Env::isolated()))
-        .build();
+        .build()
+        .unwrap();
     unknown(&copy, &fresh);
 }

@@ -30,6 +30,7 @@ Each row is something the host does, and the names it does it with.
 | Give a released session's memory back; bound and watch the sessions' memory | `api::memory::{Heap, Release, MemoryGroup, MemoryHost, Exhausted}` |
 | An evaluator that reports no lint | `EvalConfig::no_lints` |
 | The stack the host evaluates on, the room the demand fiber has, so a deep evaluation meets the call-depth error first, reserved so it starts on a small machine | `api::on_main_stack`, `api::StackError`, `api::MAIN_STACK` |
+| An evaluator whose symbol tables the kernel refused, as an error, so the session and the host go on | `api::TableError`, from `EvalConfig::build` and `Evaluator::new` |
 | Name the roots of an upload plan | `api::StorePath`: `parse`, `to_full_string`, `base_name` |
 | Plan the upload of what an evaluation made in memory, then upload it | `api::build::{plan, Plan, Dispatch, Options, Transport}` |
 | Root every path of a plan before it lands | `Plan::paths` |

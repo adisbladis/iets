@@ -908,7 +908,7 @@ mod tests {
 
     #[test]
     fn a_numeric_name_selects_an_attribute_under_a_set() {
-        let mut ev = Evaluator::new();
+        let mut ev = Evaluator::new().unwrap();
         let args = ev.eval_string("{ }", b"/").unwrap();
         configure(&mut ev, Opts::default(), args, None);
         let root = ev

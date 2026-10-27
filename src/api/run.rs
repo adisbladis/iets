@@ -3,9 +3,12 @@
 //! its worker processes, a classic command its settings — starts from
 //! [`Run::on`] and keeps only what it needs (docs/explanation/plumbing-and-porcelain.md).
 
+use std::fmt::{self, Display, Formatter};
+
 use crate::eval::{ErrorKind, EvalConfig, Evaluator};
 use crate::parallel;
 use crate::parallel::fiber::StackError;
+use crate::parallel::interner::TableError;
 use crate::session::Session;
 use crate::store::path::StorePath;
 use crate::trace::run::Cache;
@@ -22,6 +25,38 @@ pub enum Outcome<T> {
     Ok(T),
     Failed(i32),
     Unsupported(String),
+}
+
+/// Memory a run could not reserve before it evaluated anything: a symbol
+/// table of its evaluator, or its fiber stacks
+/// (docs/explanation/out-of-memory.md).
+#[derive(Debug)]
+pub enum ReserveError {
+    Table(TableError),
+    Stacks(StackError),
+}
+
+impl Display for ReserveError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            ReserveError::Table(e) => e.fmt(f),
+            ReserveError::Stacks(e) => e.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for ReserveError {}
+
+impl From<TableError> for ReserveError {
+    fn from(e: TableError) -> ReserveError {
+        ReserveError::Table(e)
+    }
+}
+
+impl From<StackError> for ReserveError {
+    fn from(e: StackError) -> ReserveError {
+        ReserveError::Stacks(e)
+    }
 }
 
 /// A build entry's result: each root derivation and the outputs wanted of it.
@@ -120,16 +155,17 @@ impl Run {
     }
 
     /// `f` as the main fiber of `workers` evaluator threads, with the trace
-    /// on when there is a cache entry to write. The error is the fiber
-    /// stacks: the reservation is over the cap, or the kernel refused it.
+    /// on when there is a cache entry to write. The error is a symbol table
+    /// the kernel refused, or the fiber stacks: the reservation is over the
+    /// cap, or the kernel refused it.
     pub fn go<R: Send + 'static>(
         self,
         f: impl FnOnce(&mut Evaluator, Option<Cache>) -> R + Send + 'static,
-    ) -> Result<R, StackError> {
+    ) -> Result<R, ReserveError> {
         let store = self.cache.as_ref().map(|c| &c.store);
-        let ev = self.cfg.trace_in(store).build();
+        let ev = self.cfg.trace_in(store).build()?;
         let cache = self.cache;
-        parallel::try_run(self.workers, ev, move |ev| f(ev, cache))
+        Ok(parallel::try_run(self.workers, ev, move |ev| f(ev, cache))?)
     }
 
     /// [`Run::go`] with the error classified: what this frontend does not
@@ -137,7 +173,7 @@ impl Run {
     pub fn eval<T: Send + 'static>(
         self,
         f: impl FnOnce(&mut Evaluator, Option<Cache>) -> error::Result<T> + Send + 'static,
-    ) -> Result<Outcome<T>, StackError> {
+    ) -> Result<Outcome<T>, ReserveError> {
         self.go(move |ev, cache| match f(ev, cache) {
             Ok(t) => Outcome::Ok(t),
             Err(Error::Unsupported(m)) => Outcome::Unsupported(m),
@@ -206,7 +242,7 @@ mod tests {
                 parallel::force_deep(ev, v).expect("the workload forces");
                 ev.ir_cache().expect("the run has an IR cache").hits()
             })
-            .expect("the fiber stacks")
+            .expect("the run reserves its memory")
     }
 
     /// The fiber template is a clone of the evaluator `go` builds, so a
@@ -219,7 +255,7 @@ mod tests {
         a.lint_roots = vec!["/nonexistent".into()];
         let want = api::lint_config(&a).expect("the lints resolve");
         let run = Run::new(&a).expect("the arguments configure");
-        let fiber = run.cfg.build().clone();
+        let fiber = run.cfg.build().unwrap().clone();
         assert!(fiber.ir_cache().is_some(), "a fiber without the IR cache");
         assert_eq!(fiber.search_path()[0], a.includes[0]);
         assert_eq!(*fiber.lint_config(), want);
@@ -262,7 +298,7 @@ mod tests {
                     thread::yield_now();
                 }
             })
-            .expect("the fiber stacks")
+            .expect("the run reserves its memory")
     }
 
     /// Each fiber counts into its own evaluator and folds those counters

@@ -668,7 +668,7 @@ mod tests {
 
     #[test]
     fn virtual_tree_reads_go_to_the_local_files() {
-        let ev = Evaluator::new();
+        let ev = Evaluator::new().unwrap();
         let root = PathBuf::from("/r");
         let sp = StorePath::parse("/nix/store/z4wkdlk69gck09s64a8ghpn6h7bxhkyy-source").unwrap();
         let accepted: HashSet<PathBuf> = ["/r/flake.nix", "/r/a", "/r/a/b.nix"]

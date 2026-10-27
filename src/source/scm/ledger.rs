@@ -231,7 +231,7 @@ mod tests {
     fn the_tracked_files_and_the_metadata_are_the_tree(ledger: Ledger) {
         let Ledger { root, plain, _dir } = ledger;
         let hash = |d: &Path| nar::nar_hash(d).unwrap().to_sri();
-        let t = read_tree(&mut Evaluator::new(), &root);
+        let t = read_tree(&mut Evaluator::new().unwrap(), &root);
         assert_eq!(t.subdir, "sub");
         let clean = [
             ("rev", AttrVal::Str("r12".into())),
@@ -244,7 +244,7 @@ mod tests {
         for top in [&root, &plain] {
             fs::write(top.join("sub/lib.nix"), "1\n").unwrap();
         }
-        let t = read_tree(&mut Evaluator::new(), &root);
+        let t = read_tree(&mut Evaluator::new().unwrap(), &root);
         let dirty = [
             ("dirtyRev", AttrVal::Str("r12-dirty".into())),
             ("dirtyShortRev", AttrVal::Str("r12-dirty".into())),
@@ -255,7 +255,7 @@ mod tests {
 
         fs::remove_file(root.join(".ledger/dirty")).unwrap();
         fs::remove_file(root.join(".ledger/head")).unwrap();
-        let t = read_tree(&mut Evaluator::new(), &root);
+        let t = read_tree(&mut Evaluator::new().unwrap(), &root);
         let new = [("lastModified", AttrVal::Int(0))];
         assert_eq!(t.attrs, attrs(&new, &root, hash(&plain)));
         assert!(t.counter.is_none());
@@ -264,7 +264,7 @@ mod tests {
     #[rstest]
     fn the_metadata_has_the_mark_of_its_tree(ledger: Ledger) {
         let Ledger { root, _dir, .. } = ledger;
-        let mut ev = Evaluator::new();
+        let mut ev = Evaluator::new().unwrap();
         let t = read_tree(&mut ev, &root);
         let info = emit_tree_attrs(&mut ev, &t, Some("self"), Pos::NONE).unwrap();
         for (f, text, mark) in [
@@ -308,7 +308,7 @@ mod tests {
             let v = ev.apply(f, &[info], Pos::NONE)?;
             ev.force(v)
         };
-        let ev = &mut EvalConfig::new().trace_in(Some(&store)).build();
+        let ev = &mut EvalConfig::new().trace_in(Some(&store)).build().unwrap();
         let there = "t: t ? revCount && builtins.elem \"revCount\" (builtins.attrNames t)";
         assert_eq!(read(ev, there).unwrap(), Word::TRUE);
         let e = read(ev, "t: t.revCount").err().unwrap();
@@ -329,7 +329,12 @@ mod tests {
         fs::create_dir_all(root.join(".ledger/revs")).unwrap();
         fs::write(root.join(".ledger/refs"), "main r12\nv1 r3\n").unwrap();
         fs::write(root.join(".ledger/revs/r3"), "1600000000\na=1\nsub/b=2\n").unwrap();
-        let trace = EvalConfig::new().trace(true).build().trace().clone();
+        let trace = EvalConfig::new()
+            .trace(true)
+            .build()
+            .unwrap()
+            .trace()
+            .clone();
         let at = |name| Ledger.resolve(&trace, &root, name).unwrap();
         assert_eq!(
             (at("v1"), at("main"), at("v")),
@@ -359,7 +364,7 @@ mod tests {
     #[rstest]
     fn an_untracked_file_is_the_error_of_nix(ledger: Ledger) {
         let Ledger { root, _dir, .. } = ledger;
-        let mut ev = Evaluator::new();
+        let mut ev = Evaluator::new().unwrap();
         let store = read_tree(&mut ev, &root).path.to_full_string();
         assert!(open(&ev, format!("{store}/sub/lib.nix").as_bytes(), Pos::NONE).is_ok());
         let e = open(&ev, format!("{store}/extra").as_bytes(), Pos::NONE)
@@ -377,7 +382,7 @@ mod tests {
     #[rstest]
     fn a_change_of_the_ledger_is_a_change_of_the_working_tree(ledger: Ledger) {
         let Ledger { root, _dir, .. } = ledger;
-        let mut ev = EvalConfig::new().trace(true).build();
+        let mut ev = EvalConfig::new().trace(true).build().unwrap();
         read_tree(&mut ev, &root);
         let mut obs = ev.trace().take();
         let kinds: Vec<&str> = obs

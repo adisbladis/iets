@@ -44,7 +44,7 @@ which a `file://` tarball reads.
 
 | What | Where |
 |:---|:---|
-| Create an evaluator | `api::Evaluator::new()` for the defaults; `api::EvalConfig::new()`, its setters, then `build()`; `no_lints()` for an evaluator that reports no lint |
+| Create an evaluator | `api::Evaluator::new()` for the defaults; `api::EvalConfig::new()`, its setters, then `build()`; `no_lints()` for an evaluator that reports no lint. `new()` and `build()` return `api::TableError` when the kernel refuses a symbol table ("The symbol tables") |
 | Settings of the arguments | `EvalArgs::config(base)` puts the lints, the IR cache, the search path and `--dump-drvs` on an `EvalConfig` |
 | The state a run owns | `api::Session::new()`, or `Session::with_env(api::Env)` for an environment of its own; `Session::enter()`, `Evaluator::enter()` ("What the host owns") |
 | The stack you evaluate on | `api::on_main_stack(f)`: `f` on this thread with the room the demand fiber has, `api::MAIN_STACK` reserved; `api::StackError` when it cannot be reserved ("The evaluator's stack") |
@@ -57,7 +57,7 @@ which a `file://` tarball reads.
 | What to evaluate | `api::Input::{Expr, File, Flake}`, `api::ArgKind` for `--arg` |
 | Evaluate it | `api::evaluate(&mut Evaluator, EvalArgs) -> Result<Word, Box<EvalError>>` |
 | Run on worker threads | `parallel::try_run(workers, ev, f)`; `parallel::default_workers()` |
-| All of the above as one call | `api::run::Run`: `Run::new(&args)`, `Run::over(config, &args)` or `Run::on(config)`, then `cached`, `workers`, `hit`, and `go` or `eval` |
+| All of the above as one call | `api::run::Run`: `Run::new(&args)`, `Run::over(config, &args)` or `Run::on(config)`, then `cached`, `workers`, `hit`, and `go` or `eval`; their error, `api::run::ReserveError`, is a symbol table or the fiber stacks |
 | Force a value | `Evaluator::force`, `force_deep`, `force_attrs` |
 | Print a value | `print::print_json`, `print::print_ambiguous`; `Evaluator::coerce_to_string` for `--raw` |
 | Report an error | `api::report_of(&Evaluator, &EvalError) -> api::Report` to render yourself, `Report::text()` for Nix's words; `api::report` sends it to the session log and gives the exit code (docs/reference/errors.md) |
@@ -99,7 +99,7 @@ calls `Session::current()`, the session this thread entered:
 let session = iets::api::Session::new();
 session.load_settings(&[])?;            // iets.toml, optional
 let _entered = session.enter();         // for this thread
-let mut ev = Evaluator::new();          // adopts the session
+let mut ev = Evaluator::new()?;         // adopts the session
 ```
 
 To skip the thread-local, use `EvalConfig::new().session(session)`. An
@@ -218,7 +218,7 @@ let group = MemoryGroup::new(Cap(8 << 30));
 let session = Session::new();
 session.heap.join(&group);              // before the first evaluator
 session.heap.set_release(Release::Unmap);
-let mut ev = EvalConfig::new().session(session.clone()).build();
+let mut ev = EvalConfig::new().session(session.clone()).build()?;
 ```
 
 The host is asked before each arena chunk (32 MiB) and each symbol name
@@ -269,10 +269,8 @@ A deep evaluation needs the room the demand fiber has, `api::MAIN_STACK`
 onto a stack of that size, and returns what `f` returns.
 
 ```rust
-let value = api::on_main_stack(|| {
-    let mut ev = EvalConfig::new().session(session.clone()).build();
-    evaluate(&mut ev)
-})?;                                    // Err(api::StackError): not reserved
+let mut ev = EvalConfig::new().session(session.clone()).build()?;
+let value = api::on_main_stack(|| evaluate(&mut ev))?;  // Err(api::StackError): not reserved
 ```
 
 The stack is reserved, as a fiber's is: a page of it costs memory once the
@@ -285,8 +283,33 @@ Under strict overcommit (`vm.overcommit_memory = 2`) the kernel charges a
 reservation too. With less than 4 GiB of the commit limit left,
 `on_main_stack` runs nothing and returns the `StackError`, whose message
 names the size and the kernel's reason. An evaluator's symbol tables are
-reservations as well, and a refused one stops the process
-(`docs/explanation/out-of-memory.md`).
+reservations as well ("The symbol tables").
+
+### The symbol tables
+
+An evaluator keeps three tables indexed by symbol: where its name is, the
+first 8 bytes of the name, and the string a builtin makes of it. Each is a
+reservation of `MAX_SYMS` words, 8 GiB, made when the evaluator is built and
+shared by the fibers of a parallel run. Under the default overcommit only
+the pages the symbols reach cost memory.
+
+Under strict overcommit the kernel charges the three in full, 24 GiB, and
+an `RLIMIT_AS` or `RLIMIT_DATA` limit counts them. With less room left than
+that, `build()` and `Evaluator::new()` return an `api::TableError`, whose
+message names the table, the size and the kernel's reason:
+
+```rust
+match EvalConfig::new().session(session.clone()).build() {
+    Ok(ev) => serve(ev),
+    Err(e) => eprintln!("{e}"),  // cannot reserve 8192 MiB for the table of symbol names: …
+}
+```
+
+The tables are mapped before anything else, and a refusal unmaps the ones
+mapped before it. So the session holds nothing of the attempt and is not
+exhausted, and an evaluator built in it later, once the memory is there,
+works. `Run::go` and `Run::eval` return the refusal as
+`ReserveError::Table`, and the fiber stacks' as `ReserveError::Stacks`.
 
 ## The value API
 

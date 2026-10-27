@@ -92,10 +92,38 @@ more than one worker reserves another 4 GiB for its demand fiber and 256 MiB
 for each helper. A helper fiber the run cannot reserve is left out, and the
 run goes on with the fibers it has.
 
-The stacks are not all an evaluator reserves. Its symbol tables are three
-reservations of `MAX_SYMS` words, 8 GiB each, and a refused one still stops
-the process (`per-symbol table: mmap failed`). Under strict overcommit an
-evaluator needs about 28 GiB of the commit limit at one worker.
+## The symbol tables are reserved
+
+An evaluator keeps three tables indexed by symbol id: where each name is,
+the first 8 bytes of each name, and the string a builtin made of it. Each
+is one reservation of `MAX_SYMS` (2^30) words, 8 GiB. An id reads its entry
+with one load and no lock, and a table never moves while fibers read it.
+Under the default overcommit only the pages the ids reach cost memory: the
+NixOS workloads in `bench/workloads` intern about 96,000 (nixos-server) and
+99,000 (nixos-plasma) symbols, under 1 MiB of each table.
+
+Strict overcommit charges the whole reservation, as it does a stack's, so
+an evaluator needs about 28 GiB of the commit limit at one worker: 24 GiB
+of tables and the 4 GiB main stack. A table the kernel refuses is an error,
+not a crash. `EvalConfig::build` maps the three tables before anything
+else. On a refusal it unmaps the ones it mapped and returns an
+`api::TableError` that names the table. The session holds nothing of the
+attempt and is not exhausted, so an evaluator built in it later works.
+`iets` prints `iets: cannot reserve 8192 MiB for the table of symbol names:
+Cannot allocate memory (os error 12)` and exits 1.
+
+The tables are not made smaller, and they do not grow as ids come. A
+smaller `MAX_SYMS` is one constant, but the point where a session is
+exhausted and the process stops with `too many symbols` comes down with it.
+At 2^26 ids the three tables would charge 1.5 GiB, and nixos-plasma would
+still use a 680th of them, but where a long session must stop is a choice
+of its own. A table that grows would reserve its address space with no
+access and give the interner pages as it hands out ids. Strict overcommit
+would then charge only those pages, but an `RLIMIT_AS` limit still counts
+the reservation, and `intern` cannot fail. A growth the kernel refuses
+would need ids already in hand to carry the evaluation to its next call, as
+`SOFT_SYMS` does, and the strings table, which the evaluator fills outside
+the interner, would have to grow with the other two.
 
 ## What a host does
 
