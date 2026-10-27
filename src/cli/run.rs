@@ -22,7 +22,7 @@ pub fn classic_name(argv0: &OsStr) -> Option<String> {
 fn on_big_stack(f: impl FnOnce() -> i32) -> i32 {
     match panic::catch_unwind(AssertUnwindSafe(|| api::on_main_stack(f))) {
         Ok(Ok(code)) => code,
-        Ok(Err(e)) => cli::stacks(e),
+        Ok(Err(e)) => cli::unreserved(e),
         Err(p) => match p.downcast::<Exit>() {
             Ok(e) => exit(e.0),
             Err(_) => 1,

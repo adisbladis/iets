@@ -20,7 +20,7 @@ use crate::session::Session;
 use crate::syntax::ast::FileId;
 use crate::syntax::symbol::{FxHashMap, Sym};
 
-use super::interner;
+use super::interner::{MAX_SYMS, PerSym, TableError};
 
 pub struct SharedMap<K, V>(Arc<Mutex<FxHashMap<K, V>>>);
 
@@ -85,7 +85,7 @@ struct FilesInner {
     /// `list[i]` points at file `i`, stored before `len` publishes it, so
     /// a lookup takes no lock: compiles on every worker read the table, and
     /// a mutex around it was contended at eight workers.
-    list: *mut AtomicPtr<FileInfo>,
+    list: PerSym<AtomicPtr<FileInfo>>,
     len: AtomicUsize,
     adder: Mutex<Adder>,
     /// Owns the entries, so references to them outlive the table.
@@ -99,22 +99,11 @@ struct Adder {
     next_base: u32,
 }
 
-// SAFETY: the list holds atomics only, each written once before `len`
-// publishes it; the mapping lives as long as this.
-unsafe impl Sync for FilesInner {}
-unsafe impl Send for FilesInner {}
-
-impl Drop for FilesInner {
-    fn drop(&mut self) {
-        interner::unmap_per_sym(self.list);
-    }
-}
-
 impl FilesInner {
     /// Appends `info`, its line table already made outside the lock.
     fn push(&self, a: &mut Adder, mut info: FileInfo, src_len: usize) -> FileId {
         let n = self.len.load(Ordering::Relaxed);
-        assert!(n < interner::MAX_SYMS, "too many files");
+        assert!(n < MAX_SYMS, "too many files");
         let base = a.next_base;
         a.next_base = base
             .checked_add(src_len as u32 + 1)
@@ -123,7 +112,7 @@ impl FilesInner {
         let p: *const FileInfo = self.heap.keep(info);
         // SAFETY: `n` is below the mapping's length, and only the holder of
         // the adder lock writes past `len`.
-        unsafe { (*self.list.add(n)).store(p as *mut FileInfo, Ordering::Release) };
+        unsafe { (*self.list.at(n)).store(p as *mut FileInfo, Ordering::Release) };
         self.len.store(n + 1, Ordering::Release);
         FileId(n as u32)
     }
@@ -134,7 +123,7 @@ impl FilesInner {
         }
         // SAFETY: entries below `len` were stored before it, point into the
         // session heap and are never written again.
-        Some(unsafe { &*(*self.list.add(i)).load(Ordering::Acquire) })
+        Some(unsafe { &*(*self.list.at(i)).load(Ordering::Acquire) })
     }
 }
 
@@ -144,28 +133,23 @@ impl FilesInner {
 #[derive(Clone)]
 pub struct Files(Arc<FilesInner>);
 
-impl Default for Files {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Files {
     /// A table whose entries live in the session this thread entered.
-    pub fn new() -> Files {
+    pub fn new() -> Result<Files, TableError> {
         Files::in_heap(Session::current().heap.clone())
     }
 
-    pub fn in_heap(heap: Arc<Heap>) -> Files {
-        Files(Arc::new(FilesInner {
-            list: interner::per_sym(),
+    /// The error is the table, which the kernel refused.
+    pub fn in_heap(heap: Arc<Heap>) -> Result<Files, TableError> {
+        Ok(Files(Arc::new(FilesInner {
+            list: PerSym::new("loaded files")?,
             len: AtomicUsize::new(0),
             adder: Mutex::new(Adder {
                 ids: HashMap::new(),
                 next_base: 0,
             }),
             heap,
-        }))
+        })))
     }
 
     /// Register the file at `path`, or return its id: every compile of one
@@ -241,37 +225,19 @@ impl Index<usize> for Files {
 /// times: two fibers racing on one symbol both store a valid string, and
 /// either one serves.
 #[derive(Clone)]
-pub struct SymWords(Arc<SymWordsInner>);
-
-struct SymWordsInner(*mut AtomicU64);
-
-// SAFETY: the table holds atomics only; the mapping lives as long as this.
-unsafe impl Sync for SymWordsInner {}
-unsafe impl Send for SymWordsInner {}
-
-impl Drop for SymWordsInner {
-    fn drop(&mut self) {
-        interner::unmap_per_sym(self.0);
-    }
-}
-
-impl Default for SymWords {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+pub struct SymWords(Arc<PerSym<AtomicU64>>);
 
 impl SymWords {
-    pub fn new() -> SymWords {
+    /// The error is the table, which the kernel refused.
+    pub fn new() -> Result<SymWords, TableError> {
         // zero is `Word::EMPTY`
-        SymWords(Arc::new(SymWordsInner(interner::per_sym())))
+        Ok(SymWords(Arc::new(PerSym::new("symbol strings")?)))
     }
 
     #[inline]
     fn slot(&self, s: Sym) -> &AtomicU64 {
-        assert!((s.0 as usize) < super::interner::MAX_SYMS);
-        // SAFETY: in bounds of the mapping.
-        unsafe { &*self.0.0.add(s.0 as usize) }
+        // SAFETY: an entry of the mapping, which lives as long as `self`.
+        unsafe { &*self.0.at(s.0 as usize) }
     }
 
     /// `Word::EMPTY` when no string was stored yet.

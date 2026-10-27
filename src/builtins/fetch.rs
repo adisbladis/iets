@@ -616,7 +616,7 @@ mod tests {
 
     #[test]
     fn the_mark_follows_the_string_like_store_context() {
-        let mut ev = Evaluator::new();
+        let mut ev = Evaluator::new().unwrap();
         let t = tree(&mut ev, "self");
         for (f, want) in [
             ("t: t.rev", "self.rev"),
@@ -656,7 +656,7 @@ mod tests {
 
     #[test]
     fn nix_sees_no_mark() {
-        let mut ev = Evaluator::new();
+        let mut ev = Evaluator::new().unwrap();
         let t = tree(&mut ev, "self");
         let f = "t: builtins.toJSON [
           (builtins.getContext t.rev) (builtins.hasContext t.rev)
@@ -674,7 +674,7 @@ mod tests {
     #[test]
     fn the_tree_decides_the_level() {
         let marked = |cfg: Config, source: &str| {
-            let mut ev = EvalConfig::new().lints(cfg).build();
+            let mut ev = EvalConfig::new().lints(cfg).build().unwrap();
             let t = tree(&mut ev, source);
             !marks(&mut ev, t, "t: t.rev").1.is_empty()
         };
@@ -718,7 +718,7 @@ mod tests {
     fn reads(cfg: Config, sources: &[&str], f: &str) -> Vec<String> {
         let session = Session::new();
         let _entered = session.enter();
-        let mut ev = EvalConfig::new().lints(cfg).build();
+        let mut ev = EvalConfig::new().lints(cfg).build().unwrap();
         for s in sources {
             let t = tree(&mut ev, s);
             let f = ev.eval_string(f, b"/").unwrap();
@@ -750,7 +750,8 @@ mod tests {
 
         let mut ev = EvalConfig::new()
             .lints(toml("[lint]\nrev-count = \"error\"\n"))
-            .build();
+            .build()
+            .unwrap();
         let t = tree(&mut ev, "self");
         let f = "t: [ (builtins.tryEval t.revCount).value (builtins.tryEval (with t; revCount)).value ]";
         let f = ev.eval_string(f, b"/").unwrap();
@@ -818,7 +819,7 @@ mod tests {
     fn an_entry_of_the_compiled_file_cache_keeps_the_site() {
         let session = Session::new();
         let _entered = session.enter();
-        let mut ev = Evaluator::new();
+        let mut ev = Evaluator::new().unwrap();
         let src = "t:\n  { s = t; }.s.revCount + { inherit (t) revCount; }.revCount";
         let file = ev.add_file(b"/t/f.nix", src.as_bytes());
         let base = ev.files[file.0 as usize].base;

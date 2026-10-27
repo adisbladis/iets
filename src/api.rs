@@ -13,6 +13,7 @@ pub use crate::error::Error;
 pub use crate::eval::{Error as EvalError, ErrorKind, EvalConfig, EvalResult, Evaluator};
 pub use crate::log::Report;
 pub use crate::parallel::fiber::{MAIN_STACK, StackError};
+pub use crate::parallel::interner::TableError;
 pub use crate::session::{Cancel, Session};
 pub use crate::store::path::StorePath;
 

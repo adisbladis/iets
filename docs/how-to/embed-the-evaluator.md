@@ -35,7 +35,7 @@ let session = iets::api::Session::new();
 session.load_settings(&[])?;            // reads iets.toml; optional
 session.log.write_to_stderr();          // or leave the sink unset
 let _entered = session.enter();         // for this thread
-let mut ev = iets::api::Evaluator::new();   // adopts the session
+let mut ev = iets::api::Evaluator::new()?;  // adopts the session
 ```
 
 The library never writes to stdout or stderr on its own. It returns errors
@@ -50,7 +50,7 @@ To evaluate again and again, give each evaluation its own session:
 ```rust
 for request in requests {
     let session = iets::api::Session::new();
-    let mut ev = iets::api::EvalConfig::new().session(session).build();
+    let mut ev = iets::api::EvalConfig::new().session(session).build()?;
     answer(&mut ev, request);
 }   // the evaluator drops here, and the session's memory with it
 ```
@@ -104,7 +104,7 @@ let run = api::run::Run::over(config, &a)?;
 ```
 
 The native commands that evaluate go through `Run`, and classic mode
-use `Run::on`. `parallel::try_run(workers, config.build(), f)` does the same
+use `Run::on`. `parallel::try_run(workers, config.build()?, f)` does the same
 without the tracing cache.
 
 ## Walking values
@@ -118,7 +118,7 @@ outside the crate.
 use iets::api::Evaluator;
 use iets::api::value::Eval;
 
-let mut evaluator = Evaluator::new();
+let mut evaluator = Evaluator::new()?;
 let mut e = Eval::new(&mut evaluator);
 let root = e.eval_expr(r#"rec { name = "demo"; version = 3; greet = who: "hello ${who}"; }"#, b"/")
     .and_then(|v| e.force(v))?;
@@ -295,7 +295,7 @@ session.heap.set_release(Release::Unmap);
 let _entered = session.enter();
 
 // inside api::on_main_stack(|| …), on the room the demand fiber has
-let mut ev = EvalConfig::new().session(session.clone()).pure(true).no_lints().build();
+let mut ev = EvalConfig::new().session(session.clone()).pure(true).no_lints().build()?;
 
 let plan = build::plan(&ev, &roots)?;   // api::Error::UnknownRoot names a root it did not make
 for path in plan.paths() {

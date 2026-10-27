@@ -40,7 +40,7 @@
 //! Reading one through `api::value`:
 //!
 //! ```no_run
-//! let mut ev = iets::eval::Evaluator::new();
+//! let mut ev = iets::eval::Evaluator::new().unwrap();
 //! let mut e = iets::api::value::Eval::new(&mut ev);
 //! let v = e.eval_expr("1 + 1", b"/").unwrap();
 //! assert_eq!(e.force(v).unwrap().as_int(), Some(2));

@@ -176,7 +176,7 @@ fn run(mut s: Search, classic: Option<&[String]>) -> i32 {
     // file an import would read. The lookup has an evaluator of its own: the
     // run builds its evaluator in `go`.
     if let Some(f) = &s.file {
-        let mut ev = ec.clone().build();
+        let mut ev = ec.clone().build().unwrap_or_else(cli::unreserved);
         match lookup_file_arg(&mut ev, f, &cwd()) {
             Ok(p) => s.file = Some(entry_file(p)),
             Err(e) => return report(&ev, &e),
