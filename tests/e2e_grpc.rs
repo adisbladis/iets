@@ -3,7 +3,7 @@
 //! a chroot builder store, so this is Linux only.
 //!
 //! Needs `IETS_TEST_NIX_GRPC_DAEMON`, the nix-grpc-daemon binary.
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", feature = "cli"))]
 
 mod e2e;
 mod hermetic;

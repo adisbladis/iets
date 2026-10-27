@@ -1,5 +1,6 @@
 //! The event stream: the groups a run names, one JSON object per store add,
 //! and silence when nobody asked for it.
+#![cfg(feature = "cli")]
 
 mod hermetic;
 

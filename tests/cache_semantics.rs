@@ -1,7 +1,7 @@
 //! The tracing evaluation cache (docs/explanation/caching.md): a hit prints
 //! the same output, every kind of change misses, uncacheable and failed runs
 //! write nothing, and each cache flag turns off the store it names.
-#![cfg(unix)]
+#![cfg(all(unix, feature = "cli"))]
 
 mod hermetic;
 

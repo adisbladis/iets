@@ -5,12 +5,36 @@
 //!
 //! `file://` reads the local file, as libcurl does for the `tarball` inputs
 //! `nix flake lock` writes with that scheme. Nothing holds a body whole: the
-//! caller's thread reads it through the decompressor into a sink.
+//! caller's thread reads it through the decompressor into a sink. The HTTP
+//! client is the `http` feature's, and a build without it downloads nothing.
 
+#[cfg(feature = "http")]
 mod http;
+#[cfg(any(feature = "http", feature = "grpc"))]
 pub mod roots;
 pub mod spool;
 pub mod unpack;
+
+/// The stand-in for the HTTP client in a build without it: every download is
+/// refused, as `IETS_OFFLINE` refuses it.
+#[cfg(not(feature = "http"))]
+mod http {
+    use std::io::Read;
+
+    use crate::error::{Error, Result};
+
+    pub(super) fn get(
+        url: &str,
+        _: &[(String, String)],
+        _: super::Limits,
+        _: impl FnOnce(Box<dyn Read>) -> Result<u64>,
+    ) -> Result<u64> {
+        Err(Error::Offline(format!(
+            "cannot fetch '{}': iets is built without the http feature",
+            super::shown(url)
+        )))
+    }
+}
 
 use std::cell::Cell;
 use std::fs::File;

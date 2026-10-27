@@ -21,6 +21,7 @@ use crate::error::{Error, Result};
 use crate::log::{self, Activity};
 use crate::remote::copy::{self, Copying};
 use crate::remote::event::Event;
+#[cfg(feature = "grpc")]
 use crate::remote::grpc::backend::Grpc;
 use crate::remote::plan::{self, Object, Plan};
 use crate::remote::worker::wire::{self, write_object};
@@ -189,14 +190,21 @@ pub fn add_roots(conn: &mut Connection, links: &[(String, Option<String>)]) -> R
     Ok(())
 }
 
-/// Connects the transport `url` names.
+/// Connects the transport `url` names. A build without the `grpc` feature
+/// has no `grpc://` client, and says so.
 pub fn open(
     transport: &Transport,
     options: &Options,
     on_event: &mut dyn FnMut(Event),
 ) -> Result<Box<dyn Backend>> {
     if let Transport::Grpc(cfg) = transport {
+        #[cfg(feature = "grpc")]
         return Ok(Box::new(Grpc::open(cfg)?));
+        #[cfg(not(feature = "grpc"))]
+        return Err(Error::Unsupported(format!(
+            "cannot open '{}': iets is built without the grpc feature",
+            cfg.url()
+        )));
     }
     Ok(Box::new(Worker::open(transport, options, on_event)?))
 }

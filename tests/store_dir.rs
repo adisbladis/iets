@@ -1,5 +1,6 @@
 //! `NIX_STORE_DIR` and `NIX_STATE_DIR` move the store and the daemon socket,
 //! as in Nix.
+#![cfg(feature = "cli")]
 
 mod hermetic;
 

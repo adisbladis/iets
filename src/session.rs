@@ -24,7 +24,6 @@ use crate::profile::Profile;
 use crate::provenance::SourceMap;
 use crate::runtime::heap::Heap;
 use crate::settings::Settings;
-use crate::stdout::Stdout;
 use crate::store::locate::References;
 use crate::{config, error, treestore};
 
@@ -36,7 +35,9 @@ pub struct Session {
     pub(crate) env: Env,
     pub(crate) command: Mutex<Option<&'static str>>,
     pub(crate) catch_exit: AtomicBool,
-    pub(crate) out: Stdout,
+    /// Where the command line writes its results (`crate::cli::render`).
+    #[cfg(feature = "cli")]
+    pub(crate) out: crate::stdout::Stdout,
     /// This run's sampled flame graph (`crate::profile`).
     pub(crate) profile: Profile,
     /// Where this run's instrumentation events go (`crate::events`).

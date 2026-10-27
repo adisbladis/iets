@@ -4,7 +4,7 @@
 //! its own input store (docs/reference/flakes.md).
 //!
 //! The cases that download from the network run with `IETS_TEST_ONLINE=1`.
-#![cfg(unix)]
+#![cfg(all(unix, feature = "cli"))]
 
 mod e2e;
 mod hermetic;
