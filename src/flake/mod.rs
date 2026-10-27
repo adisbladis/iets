@@ -384,8 +384,7 @@ pub fn get_flake(ev: &mut Evaluator, args: &[Word], pos: Pos) -> EvalResult<Word
     let pinned = pinned_path(&p);
     if let Some((path, expected)) = pinned {
         let expected = source::parse_nar_hash(expected).map_err(|e| eval_error(e, pos))?;
-        let (got, _) = fetch::path_nar_hash(ev, path, pos)?;
-        if got != expected {
+        if let Err(got) = fetch::path_nar_hash(ev, path, Some(&expected), pos)? {
             let msg = format!(
                 "NAR hash mismatch in input '{s}', expected '{}' but got '{}'",
                 expected.to_sri(),

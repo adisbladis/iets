@@ -149,4 +149,13 @@ fn get_flake_takes_a_path_its_nar_hash_locks(bin: Iets) {
     assert!(e.contains("NAR hash mismatch"), "{e}");
     let e = stderr(&unpinned);
     assert!(e.contains("unlocked flake reference"), "{e}");
+
+    let tree = format!(r#"builtins.fetchTree {{ type = "path"; path = "{at}"; narHash = true; }}"#);
+    let o = run(&bin, d.path(), &["eval", "--expr", &tree]);
+    assert_eq!(o.status.code(), Some(1), "{}", stdout(&o));
+    let e = stderr(&o);
+    assert!(
+        e.contains("input attribute 'narHash' is not a string"),
+        "{e}"
+    );
 }
