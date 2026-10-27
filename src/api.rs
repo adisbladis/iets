@@ -12,7 +12,7 @@ pub use crate::env::Env;
 pub use crate::error::Error;
 pub use crate::eval::{Error as EvalError, ErrorKind, EvalConfig, EvalResult, Evaluator};
 pub use crate::log::Report;
-pub use crate::parallel::fiber::MAIN_STACK;
+pub use crate::parallel::fiber::{MAIN_STACK, StackError};
 pub use crate::session::{Cancel, Session};
 pub use crate::store::path::StorePath;
 
@@ -20,6 +20,15 @@ pub use crate::store::path::StorePath;
 /// [`Heap`](memory::Heap) (docs/reference/library.md, "Sessions and memory").
 pub mod memory {
     pub use crate::runtime::heap::{Exhausted, Heap, MemoryGroup, MemoryHost, Release};
+}
+
+/// Runs `f` on this thread with the room the demand fiber has: a stack of
+/// [`MAIN_STACK`] bytes that is reserved, not committed, so it starts on a
+/// machine with less memory and swap. A panic in `f` goes on unwinding here.
+/// The error is the reservation, which strict overcommit can refuse
+/// (docs/explanation/out-of-memory.md).
+pub fn on_main_stack<R>(f: impl FnOnce() -> R) -> Result<R, StackError> {
+    parallel::fiber::on_stack(MAIN_STACK, f)
 }
 
 pub mod build;

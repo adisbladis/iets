@@ -421,6 +421,35 @@ fn a_full_stdout_is_an_error(bin: Iets, #[case] args: &[&str]) {
     assert!(err.contains("No space left on device"), "{err}");
 }
 
+/// Strict overcommit refuses the main stack's reservation where its commit
+/// limit has no room, as an address space limit below it does here: `iets`
+/// names what it could not reserve and exits 1, never a crash.
+#[cfg(target_os = "linux")]
+#[rstest]
+fn a_main_stack_the_kernel_refuses_is_an_error(bin: Iets) {
+    use std::io;
+    use std::os::unix::process::CommandExt;
+    let mut c = bin.cmd();
+    c.args(["eval", "-E", "1"]);
+    // SAFETY: the closure makes one async-signal-safe call and allocates nothing.
+    unsafe {
+        c.pre_exec(|| {
+            let limit = libc::rlimit {
+                rlim_cur: 2 << 30,
+                rlim_max: 2 << 30,
+            };
+            match libc::setrlimit(libc::RLIMIT_AS, &limit) {
+                0 => Ok(()),
+                _ => Err(io::Error::last_os_error()),
+            }
+        });
+    }
+    let o = c.output().unwrap();
+    let err = stderr(&o);
+    assert_eq!(o.status.code(), Some(1), "{err}");
+    assert!(err.starts_with("iets: cannot reserve 4096 MiB"), "{err}");
+}
+
 #[rstest]
 fn a_bad_config_stops_only_what_reads_a_setting(bin: Iets) {
     let conf = tempdir().unwrap();

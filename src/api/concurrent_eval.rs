@@ -6,11 +6,10 @@ use crate::api::run::Run;
 use crate::api::testkit::eval;
 use crate::api::{self, EvalArgs, Input};
 use crate::lint::Level;
-use crate::parallel::fiber::MAIN_STACK;
 use crate::session::Session;
 use rstest::rstest;
 use std::path::Path;
-use std::{env, fs, process, thread};
+use std::{env, fs, process};
 
 const SLOW: &str = "slow = n: builtins.foldl' (a: b: a + b) 0 (builtins.genList (x: x) n);";
 const WORKERS: [usize; 3] = [1, 4, 8];
@@ -493,13 +492,8 @@ fn concurrent_eval_matches_sequential_eval(#[case] name: &str) {
         .into_iter()
         .find(|c| c.name == name)
         .expect("a case of that name");
-    // the stack `main` gives the evaluator: deep-chain recurses deeply
-    let failed = thread::Builder::new()
-        .stack_size(MAIN_STACK)
-        .spawn(move || check(&c))
-        .expect("spawn the evaluator thread")
-        .join()
-        .expect("the case finishes");
+    // the stack the command line gives the evaluator: deep-chain recurses deeply
+    let failed = api::on_main_stack(|| check(&c)).expect("the main stack");
     assert!(failed.is_none(), "{}", failed.unwrap_or_default());
 }
 
@@ -536,12 +530,8 @@ fn arena_bytes(workers: usize) -> f64 {
 
 #[test]
 fn concurrent_eval_sums_arena_use_over_workers() {
-    let (one, four) = thread::Builder::new()
-        .stack_size(MAIN_STACK)
-        .spawn(|| (arena_bytes(1), arena_bytes(4)))
-        .expect("spawn the evaluator thread")
-        .join()
-        .expect("the evaluations finish");
+    let (one, four) =
+        api::on_main_stack(|| (arena_bytes(1), arena_bytes(4))).expect("the main stack");
     let ratio = four / one;
     assert!(
         (0.9..=1.5).contains(&ratio),

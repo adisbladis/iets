@@ -7,8 +7,9 @@
 //! switch as an ordinary call, so caller-saved registers are already dead.
 
 use std::fmt::{self, Display, Formatter};
+use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
-use std::{error, io, ptr};
+use std::{error, io, ptr, thread};
 
 use crate::runtime::heap;
 use crate::sys::context;
@@ -16,9 +17,9 @@ use crate::sys::fault::{self, Fault};
 use crate::sys::{self, vm};
 
 pub const DEFAULT_STACK: usize = 256 << 20;
-/// Stack of the demand fiber and of the process main thread. The demand
-/// path must have the same room at every worker count, or a program that
-/// works with one worker crashes with four.
+/// Stack of the demand fiber and of the command line's evaluator
+/// ([`on_stack`]). The demand path must have the same room at every worker
+/// count, or a program that works with one worker crashes with four.
 pub const MAIN_STACK: usize = 4 << 30;
 /// The inaccessible page at the low end of a stack: one page, whatever the
 /// platform's page size is.
@@ -297,6 +298,39 @@ unsafe extern "C" fn fiber_main(f: *mut ()) -> ! {
     unreachable!("finished fiber resumed")
 }
 
+/// Runs `f` on this thread, on a stack of `size` bytes of its own that is
+/// reserved as a fiber's is: a page costs memory once the stack reaches it,
+/// and a guard page lies below. A panic in `f` goes on unwinding from the
+/// caller's frame. The error is the reservation, which the kernel refused.
+pub fn on_stack<R, F: FnOnce() -> R>(size: usize, f: F) -> Result<R, StackError> {
+    struct Call<F, R> {
+        f: Option<F>,
+        out: Option<thread::Result<R>>,
+    }
+    unsafe fn call<R, F: FnOnce() -> R>(p: *mut ()) {
+        // SAFETY: `p` is the `Call` in `on_stack`'s frame, which waits in
+        // `resume` while this runs.
+        let c = unsafe { &mut *p.cast::<Call<F, R>>() };
+        let f = c.f.take().expect("called once");
+        // an unwind cannot cross the switch, so the panic crosses as a value
+        c.out = Some(panic::catch_unwind(AssertUnwindSafe(f)));
+    }
+    install_overflow_handler();
+    let mut c = Call {
+        f: Some(f),
+        out: None,
+    };
+    let mut fiber = Fiber::new(size, call::<R, F>, (&raw mut c).cast())?;
+    fiber.state.store(RUNNING, Ordering::Relaxed);
+    // SAFETY: the fiber is this frame's alone and nothing else resumes it.
+    // `call` never yields, so the fiber has finished when `resume` returns.
+    unsafe { fiber.resume() };
+    match c.out.take().expect("the fiber finished") {
+        Ok(r) => Ok(r),
+        Err(p) => panic::resume_unwind(p),
+    }
+}
+
 /// Stack pointer of the caller's frame, the force path's bound on how far
 /// the running fiber has gone. One instruction, inlined: a helper that
 /// returns the address of its own local costs a call and a frame slot on
@@ -438,5 +472,49 @@ mod tests {
         }
         let s = Stack::new(1 << 20).expect("stack");
         assert!(is_guard(s.base as usize));
+    }
+
+    /// The kernel's default heuristic refuses a mapping it charges past the
+    /// machine's memory plus swap, and charges no reservation. So a stack of
+    /// twice that starts and takes a deep recursion, where a thread with a
+    /// stack of that size is refused.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_stack_larger_than_memory_and_swap_starts() {
+        let mode = std::fs::read_to_string("/proc/sys/vm/overcommit_memory").unwrap();
+        if mode.trim() != "0" {
+            eprintln!("skipping: vm.overcommit_memory is {}, not 0", mode.trim());
+            return;
+        }
+        // SAFETY: an all-zero `sysinfo` is valid, and the call fills it.
+        let si = unsafe {
+            let mut si: libc::sysinfo = std::mem::zeroed();
+            assert_eq!(libc::sysinfo(&mut si), 0);
+            si
+        };
+        let machine = (si.totalram + si.totalswap) as usize * si.mem_unit as usize;
+        let size = (2 * machine).next_multiple_of(vm::page_size());
+
+        let (top, low) = (AtomicUsize::new(0), AtomicUsize::new(0));
+        let ran = on_stack(size, || {
+            top.store(sp(), Ordering::Relaxed);
+            deep(20000, &low)
+        });
+        assert_eq!(ran.map_err(|e| e.to_string()), Ok(0));
+        assert!(top.into_inner() - low.into_inner() > 20000 * 512);
+
+        let control = thread::Builder::new().stack_size(size).spawn(|| {});
+        assert!(
+            control.map(|t| t.join()).is_err(),
+            "a thread with a stack of {} MiB started",
+            size >> 20
+        );
+    }
+
+    /// A panic on the stack unwinds from the caller's frame, payload and all.
+    #[test]
+    fn a_panic_on_the_stack_reaches_the_caller() {
+        let p = panic::catch_unwind(|| on_stack(1 << 20, || -> u8 { panic::panic_any(7u8) }));
+        assert_eq!(p.unwrap_err().downcast_ref::<u8>(), Some(&7));
     }
 }
