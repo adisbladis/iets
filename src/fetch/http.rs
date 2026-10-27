@@ -367,7 +367,7 @@ fn tls() -> Result<Arc<rustls::ClientConfig>> {
 /// the whole body. Only `http` and `https`, so a URL a server named never
 /// reads a file on this machine.
 /// `headers` are credentials: they go only where `redirect` lets them.
-/// `IETS_OFFLINE=1` makes any download an error that names the URL.
+/// `IETS_OFFLINE=1` makes any download an `Error::Offline` that names the URL.
 pub fn get_decompressed(
     url: &str,
     headers: &[(String, String)],
@@ -422,7 +422,7 @@ fn read(
 
 fn offline(url: &str) -> Result<()> {
     if Session::current().settings().offline {
-        return Err(Error::Usage(format!(
+        return Err(Error::Offline(format!(
             "cannot fetch '{url}': IETS_OFFLINE is set"
         )));
     }
