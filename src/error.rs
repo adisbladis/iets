@@ -30,6 +30,8 @@ pub enum Error {
     Eval(Box<error::Error>),
     /// Bad command-line input.
     Usage(String),
+    /// A download that `IETS_OFFLINE` refused (`ErrorKind::Offline`).
+    Offline(String),
     /// nix.conf: a syntax error, a missing include, or a bad setting value.
     Config(String),
     /// Another error and the fix for it, which the record shows as `hint`.
@@ -67,6 +69,7 @@ impl Error {
             Error::Unsupported(_) => "unsupported",
             Error::Eval(e) => e.kind.code(),
             Error::Usage(_) => "usage",
+            Error::Offline(_) => "offline",
             Error::Config(_) => "config",
             Error::Hint(e, _) => e.code(),
         }
@@ -81,6 +84,17 @@ impl Error {
         log::Report {
             hint,
             ..log::Report::new(self.code(), self.to_string())
+        }
+    }
+
+    /// The kind this error keeps as an evaluation error; `otherwise` when it
+    /// has none of its own.
+    pub fn eval_kind(&self, otherwise: error::ErrorKind) -> error::ErrorKind {
+        match self {
+            Error::Offline(_) => error::ErrorKind::Offline,
+            Error::Unsupported(_) => error::ErrorKind::Unsupported,
+            Error::Hint(e, _) => e.eval_kind(otherwise),
+            _ => otherwise,
         }
     }
 
@@ -102,6 +116,7 @@ impl fmt::Display for Error {
             | Error::Cache(m)
             | Error::Unsupported(m)
             | Error::Usage(m)
+            | Error::Offline(m)
             | Error::Config(m) => f.write_str(m),
             Error::Eval(e) => f.write_str(&e.msg),
             Error::Hint(e, _) => e.fmt(f),

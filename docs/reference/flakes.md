@@ -141,8 +141,8 @@ The root tree and `path:` inputs never need this.
 `file` inputs are not supported. Their store path is the flat hash of the
 bytes, which the lock's `narHash` does not give.
 
-With `IETS_OFFLINE=1`, any download is an error that names the URL. A flake
-whose inputs are all in the input store still evaluates.
+With `IETS_OFFLINE=1`, any download is an `offline` error that names the
+URL. A flake whose inputs are all in the input store still evaluates.
 
 ### Archive URLs
 
