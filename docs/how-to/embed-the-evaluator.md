@@ -198,6 +198,11 @@ never assemble an upload yourself. Given `api::build::Root` values,
 `Dispatch::realise` builds them and `Built::paths(roots)` returns the output
 paths.
 
+To withdraw an upload or a build when your request goes away, call
+`session.cancel.cancel()` from any thread. The waiting call returns
+`Error::Cancelled`, and the session takes no more store work
+([Using iets as a library](../reference/library.md#cancelling-store-work)).
+
 ## Read derivations
 
 `examples/drv_info.rs` lists every derivation a run created:

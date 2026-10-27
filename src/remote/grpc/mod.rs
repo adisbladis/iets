@@ -14,16 +14,20 @@ pub mod proto {
     tonic::include_proto!("nix.remote");
 }
 
-use std::future::Future;
+use std::future::{self, Future};
 use std::path::{Path, PathBuf};
+use std::pin::pin;
+use std::task::Poll;
 use std::time::{Duration, Instant};
 use std::{error, fs, result, thread};
 
+use tokio::sync::watch;
 use tonic::metadata::{MetadataMap, MetadataValue};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
 
 use crate::error::{Error, Result};
 use crate::fetch::roots::roots;
+use crate::session::{Armed, Cancel, Session};
 
 use proto::nix_remote_client::NixRemoteClient;
 use proto::scheduler_client::SchedulerClient;
@@ -233,22 +237,61 @@ pub struct Client {
     pub stub: NixRemoteClient<Channel>,
     pub sched: SchedulerClient<Channel>,
     pub info: StoreInfo,
+    /// The session's cancel, which turns `stop` true.
+    cancel: Cancel,
+    stop: watch::Receiver<bool>,
+    _armed: Armed,
 }
 
 /// tonic caps decoded messages at 4 MiB by default; NAR frames are larger.
 const MAX_MESSAGE: usize = 256 << 20;
 
+/// `fut` on `rt`, or `None` once `stop` turns true.
+fn until_stopped<T>(
+    rt: &tokio::runtime::Runtime,
+    mut stop: watch::Receiver<bool>,
+    fut: impl Future<Output = T>,
+) -> Option<T> {
+    rt.block_on(async move {
+        let stopped = async move {
+            // a sender that is gone stops nothing
+            if stop.wait_for(|stopped| *stopped).await.is_err() {
+                future::pending::<()>().await;
+            }
+        };
+        let (mut fut, mut stopped) = (pin!(fut), pin!(stopped));
+        future::poll_fn(|cx| {
+            if stopped.as_mut().poll(cx).is_ready() {
+                return Poll::Ready(None);
+            }
+            fut.as_mut().poll(cx).map(Some)
+        })
+        .await
+    })
+}
+
+/// What a call the session's cancel stopped reports in place of an answer.
+pub fn cancelled() -> tonic::Status {
+    tonic::Status::cancelled("cancelled")
+}
+
 impl Client {
     /// Connects and runs `StoreInfo`, which is what `GrpcStore::connect` does.
+    /// The session this thread entered can cancel it (`session::Cancel`).
     pub fn open(cfg: &GrpcConfig) -> Result<Client> {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
             .build()
             .map_err(|e| Error::io("cannot start a tokio runtime", e))?;
+        let cancel = Session::current().cancel.clone();
+        let (tx, stop) = watch::channel(false);
+        let armed = cancel.arm(move || {
+            let _ = tx.send(true);
+        })?;
         let ep = cfg.endpoint()?;
-        let channel = rt
-            .block_on(ep.connect())
+        let channel = until_stopped(&rt, stop.clone(), ep.connect())
+            .ok_or(Error::Cancelled)?
             .map_err(|e| connect_error(cfg, &causes(&e)))?;
         let mut c = Client {
             cfg: cfg.clone(),
@@ -258,6 +301,9 @@ impl Client {
                 .max_decoding_message_size(MAX_MESSAGE)
                 .max_encoding_message_size(MAX_MESSAGE),
             info: StoreInfo::default(),
+            cancel,
+            stop,
+            _armed: armed,
         };
         let reply = c.call("StoreInfo", |mut stub, h| async move {
             stub.store_info(c_request(proto::StoreInfoRequest {}, &h))
@@ -282,7 +328,7 @@ impl Client {
         loop {
             let stub = self.stub.clone();
             let headers = self.headers()?;
-            let r = self.rt.block_on(attempt(stub, headers));
+            let r = self.block(attempt(stub, headers)).ok_or(Error::Cancelled)?;
             match r {
                 Ok(resp) => return Ok(resp.into_inner()),
                 Err(s) => {
@@ -301,7 +347,16 @@ impl Client {
         }
     }
 
+    /// `fut` on this client's runtime, or `None` once the session's cancel
+    /// stopped it.
+    pub fn block<T>(&self, fut: impl Future<Output = T>) -> Option<T> {
+        until_stopped(&self.rt, self.stop.clone(), fut)
+    }
+
     pub fn status_error(&self, s: &tonic::Status, what: &str) -> Error {
+        if self.cancel.is_cancelled() {
+            return Error::Cancelled;
+        }
         self.cfg.status_error(s, what)
     }
 
@@ -492,5 +547,23 @@ mod tests {
     fn percent_escapes_decode_in_values() {
         let c = cfg("grpc://farm:50051?token-file=%2Frun%2Fkeys%2Ftoken");
         assert_eq!(c.token_file, Some(PathBuf::from("/run/keys/token")));
+    }
+
+    /// A call the server never answers ends once the session is cancelled,
+    /// and one that answers is not held back.
+    #[test]
+    fn a_cancel_stops_a_call_that_waits() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (tx, stop) = watch::channel(false);
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(50));
+            let _ = tx.send(true);
+        });
+        assert_eq!(until_stopped(&rt, stop, future::pending::<()>()), None);
+        let (_tx, stop) = watch::channel(false);
+        assert_eq!(until_stopped(&rt, stop, async { 7 }), Some(7));
     }
 }
