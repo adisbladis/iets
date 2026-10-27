@@ -531,6 +531,12 @@ impl EvalConfig {
         self
     }
 
+    /// Every lint off, for a host that reports none: an evaluator otherwise
+    /// warns at the default levels (docs/reference/lints.md).
+    pub fn no_lints(self) -> EvalConfig {
+        self.lints(lint::Config::off())
+    }
+
     pub fn lint_root(mut self, dir: &[u8]) -> EvalConfig {
         self.lints.add_root(dir);
         self

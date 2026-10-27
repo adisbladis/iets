@@ -21,7 +21,7 @@ use crate::remote::worker::{Options, Transport, default_socket};
 use crate::runtime::Word;
 use crate::session::Session;
 use crate::settings::builders;
-use crate::{api, argv, ignored, lint, log, nixbin};
+use crate::{api, argv, ignored, log, nixbin};
 
 /// The command names iets answers to when it is installed as classic Nix.
 pub const NAMES: &[&str] = &[
@@ -223,7 +223,7 @@ pub fn eval_config(c: &Common, cfg: &Config) -> EvalConfig {
         .pure(pure)
         .search_path(full_includes(&c.flags.includes))
         .ir_cache(EvalArgs::new().ir_cache())
-        .lints(lint::Config::off())
+        .no_lints()
         .lint_root(&entry)
 }
 

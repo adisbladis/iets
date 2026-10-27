@@ -2,8 +2,25 @@
 //! call, error reporting, the build target list and the cache key. The
 //! `iets` command line is one frontend on top of this; docs/reference/library.md
 //! lists the whole surface.
+//!
+//! What a host calls is named here, and the modules behind it are free to
+//! move: the session, the evaluator and its configuration, the error types
+//! and the memory bounds are re-exported below
+//! (docs/explanation/embedding-surface.md).
 
+pub use crate::env::Env;
+pub use crate::error::Error;
+pub use crate::eval::{Error as EvalError, ErrorKind, EvalConfig, EvalResult, Evaluator};
+pub use crate::log::Report;
 pub use crate::parallel::fiber::MAIN_STACK;
+pub use crate::session::{Cancel, Session};
+pub use crate::store::path::StorePath;
+
+/// What a session's memory is and what bounds it: `Session::heap` is a
+/// [`Heap`](memory::Heap) (docs/reference/library.md, "Sessions and memory").
+pub mod memory {
+    pub use crate::runtime::heap::{Exhausted, Heap, MemoryGroup, MemoryHost, Release};
+}
 
 pub mod build;
 pub mod drvshow;
@@ -22,18 +39,15 @@ pub mod watch;
 
 use crate::builtins::text;
 use crate::compile::cache::IrCache;
-use crate::env::Env;
-use crate::eval::{self, Error, ErrorKind, EvalConfig, Evaluator, Pos};
+use crate::eval::{self, Pos};
 use crate::flake::{eval_flake_value, parse_flake_ref, select_output};
 use crate::lint::{self, Level, Scope};
 use crate::provenance::{describe_pos, rewrite_msg};
 use crate::runtime::Word;
-use crate::session::Session;
-use crate::store::path::StorePath;
 use crate::sys::{self, OsStringExt};
 use crate::trace::key::{Key, has_relative_path};
 use crate::trace::run::Cache;
-use crate::{argv, compile, config, error, log, parallel, project};
+use crate::{argv, compile, config, error, parallel, project};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -121,7 +135,7 @@ impl EvalArgs {
 
     /// `base` plus what these arguments set: the lints, the IR cache, the
     /// search path and `--dump-drvs`. `base` holds the system and `pure-eval`.
-    pub fn config(&self, base: EvalConfig) -> Result<EvalConfig, Box<Error>> {
+    pub fn config(&self, base: EvalConfig) -> Result<EvalConfig, Box<EvalError>> {
         if self
             .xp_features
             .iter()
@@ -137,7 +151,7 @@ impl EvalArgs {
             return Ok(c);
         };
         fs::create_dir_all(dir).map_err(|e| {
-            Error::boxed(
+            EvalError::boxed(
                 ErrorKind::Io,
                 format!("cannot create '{dir}': {e}"),
                 Pos::NONE,
@@ -187,7 +201,7 @@ pub fn flake_ref(f: &str, cwd: &[u8]) -> error::Result<flake::FlakeRef> {
 /// An evaluation error as a value a host can render itself. Positions and
 /// the store paths inside the messages name the local file the source was
 /// copied from, when one is known (docs/explanation/provenance.md).
-pub fn report_of(ev: &Evaluator, e: &Error) -> log::Report {
+pub fn report_of(ev: &Evaluator, e: &EvalError) -> Report {
     let _entered = ev.session().enter();
     let at = |pos: Pos| describe_pos(ev, pos).unwrap_or_else(|| ev.describe_pos(pos));
     ev.lints.flush();
@@ -199,7 +213,7 @@ pub fn report_of(ev: &Evaluator, e: &Error) -> log::Report {
     };
     // input fetch errors open with "iets: " (source/remote.rs); after "error: " that only doubles
     let msg = msg.strip_prefix("iets: ").unwrap_or(&msg);
-    let mut r = log::Report::eval(e, msg, &at, &|m| rewrite_msg(ev, m));
+    let mut r = Report::eval(e, msg, &at, &|m| rewrite_msg(ev, m));
     if e.kind == ErrorKind::Lint {
         r.site = ev.lint_site_of_error(e);
     }
@@ -207,7 +221,7 @@ pub fn report_of(ev: &Evaluator, e: &Error) -> log::Report {
 }
 
 /// The same report, sent to the session's log, with the exit code.
-pub fn report(ev: &Evaluator, e: &Error) -> i32 {
+pub fn report(ev: &Evaluator, e: &EvalError) -> i32 {
     let _entered = ev.session().enter();
     report_of(ev, e).emit()
 }
@@ -243,16 +257,16 @@ pub fn project_root(a: &EvalArgs) -> Option<Vec<u8>> {
 }
 
 /// The lint configuration of a run (docs/reference/lints.md).
-pub fn lint_config(a: &EvalArgs) -> Result<lint::Config, Box<Error>> {
+pub fn lint_config(a: &EvalArgs) -> Result<lint::Config, Box<EvalError>> {
     let cwd = cwd();
     let roots: Vec<Vec<u8>> = a.lint_roots.iter().map(|r| abs_path(r, &cwd)).collect();
     lint::Config::resolve(Some(&entry_dir(a)), &a.lints, &roots, a.lint_scope, &a.env)
-        .map_err(|m| Error::boxed(ErrorKind::Eval, m, Pos::NONE))
+        .map_err(|m| EvalError::boxed(ErrorKind::Eval, m, Pos::NONE))
 }
 
 /// Evaluates the input, `--arg`s and `-A` included. The settings of `a` are
 /// on `ev` already (`EvalArgs::config`).
-pub fn evaluate(ev: &mut Evaluator, a: EvalArgs) -> Result<Word, Box<Error>> {
+pub fn evaluate(ev: &mut Evaluator, a: EvalArgs) -> Result<Word, Box<EvalError>> {
     evaluate_with(ev, a, &mut Loaded::default())
 }
 
@@ -275,7 +289,7 @@ pub fn evaluate_with(
     ev: &mut Evaluator,
     a: EvalArgs,
     loaded: &mut Loaded,
-) -> Result<Word, Box<Error>> {
+) -> Result<Word, Box<EvalError>> {
     let _entered = ev.enter();
     let (root, args) = input_and_args(ev, &a, loaded)?;
     select(ev, root, a.attr.as_deref(), args, !a.args.is_empty())
@@ -286,8 +300,8 @@ pub fn evaluate_with(
 pub fn evaluate_each(
     ev: &mut Evaluator,
     a: &EvalArgs,
-    mut each: impl FnMut(&mut Evaluator, Word) -> Result<(), Box<Error>>,
-) -> Result<(), Box<Error>> {
+    mut each: impl FnMut(&mut Evaluator, Word) -> Result<(), Box<EvalError>>,
+) -> Result<(), Box<EvalError>> {
     let _entered = ev.enter();
     let (root, args) = input_and_args(ev, a, &mut Loaded::default())?;
     let has_args = !a.args.is_empty();
@@ -308,7 +322,7 @@ fn select(
     attr: Option<&str>,
     args: Word,
     has_args: bool,
-) -> Result<Word, Box<Error>> {
+) -> Result<Word, Box<EvalError>> {
     match attr {
         Some(attr) => installable::find_along_attr_path(ev, root, attr, args),
         // nix-instantiate.cc: no attribute path, so the top level is called
@@ -322,7 +336,7 @@ fn input_and_args(
     ev: &mut Evaluator,
     a: &EvalArgs,
     loaded: &mut Loaded,
-) -> Result<(Word, Word), Box<Error>> {
+) -> Result<(Word, Word), Box<EvalError>> {
     let cwd = cwd();
 
     let v = match &a.input {
@@ -334,7 +348,7 @@ fn input_and_args(
                     error::Error::Unsupported(_) => ErrorKind::Unsupported,
                     _ => ErrorKind::Eval,
                 };
-                Error::boxed(kind, m.to_string(), Pos::NONE)
+                EvalError::boxed(kind, m.to_string(), Pos::NONE)
             })?;
             fr.lock = a
                 .reference_lock_file
@@ -355,7 +369,7 @@ fn input_and_args(
             }
         }
         None => {
-            return Err(Error::boxed(
+            return Err(EvalError::boxed(
                 ErrorKind::Eval,
                 "nothing to evaluate: no expression, file or flake",
                 Pos::NONE,
@@ -371,7 +385,7 @@ pub fn auto_args(
     ev: &mut Evaluator,
     args: &[(String, ArgKind)],
     cwd: &[u8],
-) -> Result<Word, Box<Error>> {
+) -> Result<Word, Box<EvalError>> {
     let _entered = ev.enter();
     let mut entries = Vec::new();
     // common-eval-args.cc keeps autoArgs in a map and insert_or_assign's into

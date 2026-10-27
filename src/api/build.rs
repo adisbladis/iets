@@ -10,26 +10,27 @@ use std::{fs, io};
 
 use crate::build::executor::Places;
 use crate::build::upload::PlanUpload;
-use crate::build::{Dispatcher, Outcome, Target};
+use crate::build::{Dispatcher, backend};
 use crate::builtins::derivation::DrvInfo;
-use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::eval::Evaluator;
-use crate::provenance::Provenance;
 use crate::remote::plan::{self, Inputs};
-use crate::remote::worker::Missing;
 use crate::settings;
+use crate::store::drv::Derivation;
 use crate::store::locate::locate_in_store;
 use crate::store::path::StorePath;
 use crate::store::source::SourceOrigin;
 use crate::syntax::symbol::FxHashMap;
 
-// What `Dispatch::open` takes, so a caller above this line can name it all
-// without reaching past the api (tests/layering.rs).
-pub use crate::build::render::Style;
+// What `Dispatch` and the calls around it take and give back, so a caller
+// above this line can name it all without reaching past the api
+// (tests/layering.rs).
+pub use crate::build::render::{Mode, Style};
+pub use crate::build::{Outcome, Target};
+pub use crate::config::Config;
+pub use crate::provenance::Provenance;
 pub use crate::remote::plan::Plan;
-pub use crate::remote::worker::{Options, Transport};
-use crate::store::drv::Derivation;
+pub use crate::remote::worker::{Missing, Options, Transport};
 
 /// One derivation and one of its outputs a command asked for.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -61,6 +62,14 @@ pub fn places(url: Option<&str>, cfg: &Config) -> Result<Places> {
 /// several places that is the first one.
 pub fn transport(url: Option<&str>, cfg: &Config) -> Result<Transport> {
     Ok(places(url, cfg)?.get(0).transport.clone())
+}
+
+/// Whether the store `transport` names answers: it is opened as
+/// [`Dispatch::open`] opens it, with the worker protocol's handshake or a
+/// `grpc://` store's `StoreInfo`, and closed again. The session's cancel
+/// stops the probe as it stops any connection.
+pub fn answers(transport: &Transport) -> Result<()> {
+    backend::open(transport, &Options::default(), &mut |_| {}).map(drop)
 }
 
 /// The upload plan for `roots`, from the derivations and sources this

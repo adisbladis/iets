@@ -6,9 +6,11 @@
 
 iets is a library with a thin `iets` binary on top. This page lists the entry
 points, says what a `Session` owns and maps the value API to Nix's C API.
-`examples/` has working frontends (`eval.rs`, `build.rs`, `drv_info.rs`,
-`value.rs`) that use `pub` items only and never touch `iets::cli`. Do the
-same in yours.
+The library's surface is what `api` names: a program that embeds the
+evaluator needs nothing outside it, and the modules behind it can move
+(`docs/explanation/embedding-surface.md`). `examples/` has working frontends
+(`eval.rs`, `build.rs`, `drv_info.rs`, `value.rs`) that never touch
+`iets::cli`. Do the same in yours.
 
 `crate::runtime` names the evaluator's types (`Word`, `Arena`, the heap
 objects), but every operation on them is `pub(crate)`. You take a `Word` from
@@ -20,33 +22,36 @@ because a word made up from bits would let a safe call read any address.
 
 | What | Where |
 |:---|:---|
-| Create an evaluator | `eval::Evaluator::new()` for the defaults; `eval::EvalConfig::new()`, its setters, then `build()` |
+| Create an evaluator | `api::Evaluator::new()` for the defaults; `api::EvalConfig::new()`, its setters, then `build()`; `no_lints()` for an evaluator that reports no lint |
 | Settings of the arguments | `EvalArgs::config(base)` puts the lints, the IR cache, the search path and `--dump-drvs` on an `EvalConfig` |
-| The state a run owns | `session::Session::new()`, `Session::enter()`, `Evaluator::enter()` ("What the host owns") |
-| The memory a session holds | `Session::heap`: `bytes()`, `set_release(Release)`, `join(&MemoryGroup)` ("Sessions and memory") |
-| Bound several sessions together | `runtime::heap::{MemoryGroup, MemoryHost}` ("Bounding memory") |
-| A session that ran out of memory or symbols | `Heap::exhausted() -> Option<Exhausted>`, `ErrorKind::Exhausted` ("Running out of memory") |
+| The state a run owns | `api::Session::new()`, or `Session::with_env(api::Env)` for an environment of its own; `Session::enter()`, `Evaluator::enter()` ("What the host owns") |
+| The thread you evaluate on | `std::thread::Builder::stack_size(api::MAIN_STACK)`, the room the demand fiber has |
+| The memory a session holds | `Session::heap`, an `api::memory::Heap`: `bytes()`, `set_release(Release)`, `join(&MemoryGroup)` ("Sessions and memory") |
+| Bound several sessions together | `api::memory::{MemoryGroup, MemoryHost}` ("Bounding memory") |
+| A session that ran out of memory or symbols | `Heap::exhausted() -> Option<api::memory::Exhausted>`, `ErrorKind::Exhausted` ("Running out of memory") |
 | Environment settings | `Session::settings()`, `Session::load_settings(&opts)` (docs/reference/settings.md) |
 | Where messages go | `Session::log.write_to(Box<dyn Write + Send>)`, `write_to_stderr()` |
 | Arguments of one evaluation | `api::EvalArgs` (`EvalArgs::new()` for the defaults) |
 | What to evaluate | `api::Input::{Expr, File, Flake}`, `api::ArgKind` for `--arg` |
-| Evaluate it | `api::evaluate(&mut Evaluator, EvalArgs) -> Result<Word, Box<Error>>` |
+| Evaluate it | `api::evaluate(&mut Evaluator, EvalArgs) -> Result<Word, Box<EvalError>>` |
 | Run on worker threads | `parallel::try_run(workers, ev, f)`; `parallel::default_workers()` |
 | All of the above as one call | `api::run::Run`: `Run::new(&args)`, `Run::over(config, &args)` or `Run::on(config)`, then `cached`, `workers`, `hit`, and `go` or `eval` |
 | Force a value | `Evaluator::force`, `force_deep`, `force_attrs` |
 | Print a value | `print::print_json`, `print::print_ambiguous`; `Evaluator::coerce_to_string` for `--raw` |
-| Report an error | `api::report_of(&Evaluator, &Error) -> log::Report` to render yourself; `api::report` sends it to the session log and gives the exit code (docs/reference/errors.md) |
-| Error types | `eval::{Error, ErrorKind, EvalResult}`; `error::Error` for store and io |
+| Report an error | `api::report_of(&Evaluator, &EvalError) -> api::Report` to render yourself, `Report::text()` for Nix's words; `api::report` sends it to the session log and gives the exit code (docs/reference/errors.md) |
+| Error types | `api::{EvalError, ErrorKind, EvalResult}` inside an evaluation; `api::Error` for store and io |
 | Derivations this run created | `Evaluator::drv.drvs` (`StorePath -> builtins::derivation::DrvInfo`) |
 | Derivation roots of a value | `api::installable::drv_roots`; `get_drvs`/`get_drvs_at` for the `recurseForDerivations` walk; `to_install` for `meta.outputsToInstall`; `to_derivation` for the drv path alone |
 | Derivations as Nix's JSON | `api::drvshow::show(ev, roots, recursive)`, the `nix derivation show` document; `recursive` walks the input-drv closure |
 | Derivations of another run | `api::build::drvs_in_dir(dir)` over an `EvalArgs::dump_drvs` directory; `api::build::drv_info(path, aterm)` for one |
+| Store paths | `api::StorePath`: `parse`, `to_full_string`, `base_name`, `is_derivation` |
 | Outputs to build | `api::build_targets(wanted, roots)` |
-| Upload plan | `api::build::plan(ev, roots)`, or `plan_with(roots, drvs, sources)` over a table you hold; empty tables read every drv from `/nix/store`. A root is a derivation or a store path the evaluation added ("Make a copied path valid") |
-| Where the builds go | `api::build::transport(flag, &api::build::config())` |
-| Build | `api::build::Dispatch::open(&transport, &options, plan, prov, style)`, then `submit`, `upload_only`, `missing` or `realise`; `overrides(map)` for `--source STOREPATH=LOCAL` |
+| Upload plan | `api::build::plan(ev, roots)`, or `plan_with(roots, drvs, sources)` over a table you hold; empty tables read every drv from `/nix/store`. A root is a derivation or a store path the evaluation added ("Make a copied path valid"). `Plan::paths()` lists every path the plan makes valid |
+| Where the builds go | `api::build::transport(flag, &api::build::config())`; `api::build::Config` is the Nix settings it reads, `Config::store()` the `store` setting |
+| Whether a store answers | `api::build::answers(&transport)`: the handshake, or `StoreInfo` for a `grpc://` store |
+| Build | `api::build::Dispatch::open(&transport, &options, plan, prov, style)`, then `submit`, `upload_only`, `missing` or `realise`; `overrides(map)` for `--source STOREPATH=LOCAL`. `api::build::{Options, Provenance, Style, Mode}` are what `open` takes; `submit` takes `Target`s and gives `Outcome`s, `missing` gives a `Missing` |
 | One output path per root | `Dispatch::realise(roots, &name)` then `Built::paths(roots)`; `api::build::Root { drv, output }` |
-| Withdraw an upload or a build in flight | `Session::cancel`: `cancel()`, `is_cancelled()` ("Cancelling store work") |
+| Withdraw an upload or a build in flight | `Session::cancel`, an `api::Cancel`: `cancel()`, `is_cancelled()` ("Cancelling store work") |
 | Hash a URL, or a fixed-output derivation | `api::fetch::url_hash(url, unpack, algo)`, `api::fetch::drv_hash(ev, root)` |
 | Evaluation cache | `Run::cached(&args, subcommand)`, `Run::hit`, `trace::run::Cache`; `Cache::entry_path()` names the entry a run reads |
 | What to watch for an answer to go stale | `api::watch::watch_paths(entry)` over an entry path, giving `Watched { path, kind }` capped at `api::watch::MAX` |
@@ -69,7 +74,7 @@ An `Evaluator` keeps a handle to its session (`ev.session()`). Other code
 calls `Session::current()`, the session this thread entered:
 
 ```rust
-let session = iets::session::Session::new();
+let session = iets::api::Session::new();
 session.load_settings(&[])?;            // iets.toml, optional
 let _entered = session.enter();         // for this thread
 let mut ev = Evaluator::new();          // adopts the session
@@ -109,10 +114,10 @@ code.
 `session.cancel.cancel()` withdraws the session's work on a store, from any
 thread: every connection the session opened to a daemon, an ssh store or a
 `grpc://` store is shut, and the upload, build or query waiting on it returns
-`Error::Cancelled`. A `Dispatch` or a `remote::worker::Connection` belongs to
-the session the thread had entered when it was opened. Cancelling is final:
-the session's next connection fails at once with `Error::Cancelled`, so make a
-new session for the next request.
+`api::Error::Cancelled`. A `Dispatch`, and the connection of
+`api::build::answers`, belong to the session the thread had entered when they
+were opened. Cancelling is final: the session's next connection fails at
+once with `Error::Cancelled`, so make a new session for the next request.
 
 ```rust
 let session = Session::new();
@@ -177,7 +182,7 @@ symbol names. To bound several sessions together, put them in one
 `MemoryGroup`, whose `MemoryHost` decides how far the group may grow:
 
 ```rust
-use iets::runtime::heap::{MemoryGroup, MemoryHost, Release};
+use iets::api::memory::{MemoryGroup, MemoryHost, Release};
 
 struct Cap(usize);
 
@@ -266,7 +271,7 @@ Methods on `Eval` may evaluate, intern a name or allocate.
 | Call a function | `Eval::call(f, arg)`; `Eval::apply(f, arg)` for a thunk |
 | Keep a value for a later borrow | `Eval::keep(v) -> Kept`, then `Eval::get(&kept) -> Option<Value>` |
 | Construct | `Eval::int`, `float`, `boolean`, `null`, `string`, `path`, `list`, `attrs` |
-| Errors | `eval::EvalResult<T>`, reported with `api::report` |
+| Errors | `api::EvalResult<T>`, reported with `api::report` |
 
 - A getter on a value that is not forced yet reports `ValueKind::Thunk`
   and returns `None`. It never panics and never forces, so force first.
