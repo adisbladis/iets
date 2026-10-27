@@ -40,6 +40,7 @@ dash means the code has no kind of its own.
 | `infinite-recursion` | `ErrorKind::InfiniteRecursion` | a value that depends on itself |
 | `stack-overflow` | `ErrorKind::StackOverflow` | the evaluator ran out of stack |
 | `budget` | `ErrorKind::Budget` | the memory host of the session's group refused more memory (`docs/reference/library.md`, "Bounding memory"); `tryEval` does not catch it |
+| `exhausted` | `ErrorKind::Exhausted` | the session ran out of memory or of symbols, and every later evaluation in it fails the same way (`docs/reference/library.md`, "Running out of memory"); `tryEval` does not catch it |
 | `parse` | `ErrorKind::Parse` | a syntax error |
 | `lint` | `ErrorKind::Lint` | a lint at level `error`; at `warn`, a level-1 record |
 | `hash-mismatch` | `ErrorKind::HashMismatch`, build status | a fetched tree or a fixed-output build whose hash is not the one given |
