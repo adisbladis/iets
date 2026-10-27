@@ -52,7 +52,7 @@ thread_local! {
     /// One for each thread: an evaluator is not `Send`, and its arena is
     /// never freed (runtime/arena.rs), so one per input would not do.
     static EV: std::cell::RefCell<Evaluator> =
-        std::cell::RefCell::new(EvalConfig::new().pure(true).build());
+        std::cell::RefCell::new(EvalConfig::new().pure(true).build().unwrap());
 }
 
 impl Eval {
@@ -151,7 +151,7 @@ impl Target for Eval {
         if !matches!(v, Verdict::Bug(_)) {
             return v;
         }
-        EV.set(EvalConfig::new().pure(true).build());
+        EV.set(EvalConfig::new().pure(true).build().unwrap());
         let v = self.verdict(&src);
         let Verdict::Bug(mut d) = v else { return v };
         if !matches!(d.kind, "iets-only" | "value") {

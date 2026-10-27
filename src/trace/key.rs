@@ -45,9 +45,12 @@ impl Key {
 
 /// Whether an expression text holds a relative path literal, so its meaning
 /// depends on cwd. A text that does not parse counts as relative (the key
-/// then includes cwd, which is harmless).
+/// then includes cwd, which is harmless), and so does one with no symbol
+/// table to parse into.
 pub fn has_relative_path(src: &str) -> bool {
-    let mut interner = Interner::new();
+    let Ok(mut interner) = Interner::new() else {
+        return true;
+    };
     match syntax::parse(src.as_bytes(), FileId(0), &mut interner) {
         Ok(ast) => ast
             .exprs
