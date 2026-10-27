@@ -220,6 +220,13 @@ pub fn missing_top_down<N: Copy + Eq + Hashable>(
 }
 
 impl Plan {
+    /// Every path the plan makes valid: the sources in registration order,
+    /// then the derivations, each after its input drvs. A host roots them
+    /// before the upload lands them.
+    pub fn paths(&self) -> impl Iterator<Item = &StorePath> {
+        (self.sources.iter()).chain(self.drvs.iter().map(Object::store_path))
+    }
+
     /// The plan's paths in the closure of `roots` that the store lacks
     /// (`missing_top_down`). A valid drv or text answers for all it
     /// references.
@@ -229,11 +236,7 @@ impl Plan {
         answered: Option<&HashSet<String>>,
         query: &mut dyn FnMut(&[StorePath]) -> Result<HashSet<String>>,
     ) -> Result<HashSet<&StorePath>> {
-        let planned: HashSet<&StorePath> = self
-            .sources
-            .iter()
-            .chain(self.drvs.iter().map(Object::store_path))
-            .collect();
+        let planned: HashSet<&StorePath> = self.paths().collect();
         let texts = (self.origins.iter()).filter_map(|(p, o)| Some((p, o.text_refs()?)));
         let refs: HashMap<&StorePath, Vec<&StorePath>> = self
             .drvs

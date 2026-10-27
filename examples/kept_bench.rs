@@ -14,8 +14,7 @@ use std::time::Instant;
 use std::{env, process};
 
 use iets::api::value::{Eval, Value};
-use iets::eval::{EvalConfig, Evaluator};
-use iets::session::Session;
+use iets::api::{EvalConfig, Evaluator, Session};
 
 fn die(msg: &str) -> ! {
     eprintln!("kept_bench: {msg}");

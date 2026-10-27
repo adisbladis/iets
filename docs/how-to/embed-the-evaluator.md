@@ -20,11 +20,11 @@ A `Session` holds what would otherwise be statics: the settings, where
 messages go, the tree store and the `nix.conf` that was read.
 
 ```rust
-let session = iets::session::Session::new();
+let session = iets::api::Session::new();
 session.load_settings(&[])?;            // reads iets.toml; optional
 session.log.write_to_stderr();          // or leave the sink unset
 let _entered = session.enter();         // for this thread
-let mut ev = iets::eval::Evaluator::new();   // adopts the session
+let mut ev = iets::api::Evaluator::new();   // adopts the session
 ```
 
 The library never writes to stdout or stderr on its own. It returns errors
@@ -38,8 +38,8 @@ To evaluate again and again, give each evaluation its own session:
 
 ```rust
 for request in requests {
-    let session = iets::session::Session::new();
-    let mut ev = iets::eval::EvalConfig::new().session(session).build();
+    let session = iets::api::Session::new();
+    let mut ev = iets::api::EvalConfig::new().session(session).build();
     answer(&mut ev, request);
 }   // the evaluator drops here, and the session's memory with it
 ```
@@ -78,7 +78,7 @@ cargo run --release --example eval -- -E '{ a = 1; b = [1 2]; }'
 ```
 
 `Run::new` copies the settings from the arguments onto an
-`eval::EvalConfig`: the lints, the IR cache, the search path. `Run::go`
+`api::EvalConfig`: the lints, the IR cache, the search path. `Run::go`
 builds the evaluator from it and starts the worker threads.
 
 `Run::new` evaluates purely, as the `iets` commands do, unless
@@ -88,7 +88,7 @@ run has no `<nixpkgs>` search path and no `builtins.currentSystem`.
 anything you want has to go on the `EvalConfig`:
 
 ```rust
-let config = iets::eval::EvalConfig::new().system("aarch64-linux").pure(true);
+let config = iets::api::EvalConfig::new().system("aarch64-linux").pure(true);
 let run = api::run::Run::over(config, &a)?;
 ```
 
@@ -104,8 +104,8 @@ way in, because the `runtime::Word` that `api::evaluate` returns is opaque
 outside the crate.
 
 ```rust
+use iets::api::Evaluator;
 use iets::api::value::Eval;
-use iets::eval::Evaluator;
 
 let mut evaluator = Evaluator::new();
 let mut e = Eval::new(&mut evaluator);
@@ -194,7 +194,7 @@ The example drives the lower-level `Dispatcher` itself. In your own program,
 
 ```rust
 use iets::api;
-use iets::build::{render::Style, Target};
+use iets::api::build::{Provenance, Style, Target};
 
 let mut found = Vec::new();
 if let Err(e) = api::installable::drv_roots(ev, value, &mut found) {
@@ -204,7 +204,7 @@ if let Err(e) = api::installable::drv_roots(ev, value, &mut found) {
 let (roots, outputs) = api::build_targets(&[], &found);
 let plan = api::build::plan(ev, &roots)?;
 let transport = api::build::transport(Some("daemon"), &api::build::config())?;
-let prov = iets::provenance::Provenance::snapshot(ev);
+let prov = Provenance::snapshot(ev);
 let options = api::build::Options::default();
 let mut d = api::build::Dispatch::open(&transport, &options, plan, prov, Style::detect())?;
 let targets = roots
@@ -249,7 +249,7 @@ drv	attr	position	outputs
 ```
 
 The derivations are in `Evaluator::drv.drvs`, keyed by store path, and each
-`DrvInfo` carries `attr` and `pos`. `provenance::Provenance::snapshot(ev)`
+`DrvInfo` carries `attr` and `pos`. `api::build::Provenance::snapshot(ev)`
 maps store paths back to the local trees they were copied from. How that
 works is in
 [Trace a store path back to its source](../explanation/provenance.md).
@@ -264,3 +264,40 @@ let record = api::report_of(ev, &err);   // to render yourself
 `report` maps store paths and positions back to the local trees they came
 from. To render the record yourself, call `report_of` and leave the session's
 sink unset.
+
+## A long-lived host
+
+A daemon that evaluates for its clients keeps one session per root, reads
+none of its own environment, bounds the memory of all its sessions together,
+and uploads what an evaluation made before a client uses it. Every name it
+needs is in `iets::api`, and `tests/embedding.rs` runs the whole flow:
+
+```rust
+use iets::api::build::{self, Dispatch, Mode, Options, Provenance, Style};
+use iets::api::memory::Release;
+use iets::api::{Env, EvalConfig, Session};
+
+let env = Env::isolated().with([("NIX_CONFIG", format!("store = {url}"))]);
+let session = Session::with_env(env);
+session.heap.join(&group);              // one MemoryGroup for every session
+session.heap.set_release(Release::Unmap);
+let _entered = session.enter();
+
+// on a thread built with `stack_size(api::MAIN_STACK)`
+let mut ev = EvalConfig::new().session(session.clone()).pure(true).no_lints().build();
+
+let plan = build::plan(&ev, &roots)?;   // api::Error::UnknownRoot names a root it did not make
+for path in plan.paths() {
+    hold_a_root(path);                  // before the upload makes it valid
+}
+let transport = build::transport(None, &build::config())?;
+build::answers(&transport)?;            // the store is there
+let quiet = Style { mode: Mode::Ci, color: false, fold: false, quiet: true };
+let mut d = Dispatch::open(&transport, &Options::default(), plan, Provenance::off(), quiet)?;
+d.upload_only(&roots)?;                 // api::Error::Cancelled after session.cancel.cancel()
+```
+
+An evaluation error's `kind` tells the program's failure from the host's:
+`ErrorKind::Offline` for a download `IETS_OFFLINE` refused, `Budget` when
+the `MemoryHost` refused memory, and `Exhausted` when the session ran out
+([Using iets as a library](../reference/library.md#bounding-memory)).

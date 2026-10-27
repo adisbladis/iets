@@ -4,8 +4,8 @@
 //!
 //! Uses the library only (`iets::api::value`), never `iets::cli`.
 
+use iets::api::Evaluator;
 use iets::api::value::{ContextElem, Eval, Value, ValueKind};
-use iets::eval::Evaluator;
 
 use std::env;
 use std::process::{self, ExitCode};
@@ -26,7 +26,7 @@ const DEFAULT: &str = r#"
 
 fn main() -> ExitCode {
     // a frontend owns the run state and says where messages go
-    let session = iets::session::Session::new();
+    let session = iets::api::Session::new();
     session.log.write_to_stderr();
     let _entered = session.enter();
     let mut argv = env::args().skip(1);

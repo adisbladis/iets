@@ -9,19 +9,19 @@ use std::collections::HashMap;
 use std::env;
 use std::process::{self, ExitCode};
 
+use iets::api::Evaluator;
+use iets::api::StorePath;
+use iets::api::build::{Style, Target};
 use iets::api::installable::drv_roots;
 use iets::api::{self, EvalArgs, Input};
-use iets::build::render::Style;
+use iets::build::Dispatcher;
 use iets::build::upload::PlanUpload;
-use iets::build::{Dispatcher, Target};
-use iets::eval::Evaluator;
-use iets::remote::{plan, worker};
+use iets::remote::worker;
 use iets::store::locate::locate_in_store;
-use iets::store::path::StorePath;
 
 fn main() -> ExitCode {
     // a frontend owns the run state and says where messages go
-    let session = iets::session::Session::new();
+    let session = iets::api::Session::new();
     session.log.write_to_stderr();
     let _entered = session.enter();
     let mut url = "daemon".to_string();
@@ -67,19 +67,13 @@ fn eval_and_build(ev: &mut Evaluator, a: EvalArgs, url: String) -> u8 {
     }
     // `--out` would add wanted outputs; the roots' string context is enough here.
     let (root_paths, outputs) = api::build_targets(&[], &roots);
-    let prov = iets::provenance::Provenance::snapshot(ev);
+    let prov = api::build::Provenance::snapshot(ev);
 
     // Every derivation and source this evaluation created, straight from
     // memory: the plan reads `/nix/store` only for what it did not create.
-    let drvs = ev.drv.drvs.lock();
-    let sources = ev.known.origins();
-    let inputs = plan::Inputs {
-        drvs: &drvs,
-        sources: &sources,
-    };
     let no_overrides = HashMap::new();
     let locate = |paths: &[StorePath]| locate_in_store(paths, &no_overrides);
-    let plan = match plan::plan(&root_paths, inputs) {
+    let plan = match api::build::plan(ev, &root_paths) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("error: {e}");
