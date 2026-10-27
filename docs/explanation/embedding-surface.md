@@ -22,7 +22,7 @@ Each row is something the host does, and the names it does it with.
 | A session that reads none of the host's environment but the variables it adds (`NIX_CONFIG`, `IETS_OFFLINE`) | `api::Env::{isolated, with}` |
 | Give a released session's memory back; bound and watch the sessions' memory | `api::memory::{Heap, Release, MemoryGroup, MemoryHost, Exhausted}` |
 | An evaluator that reports no lint | `EvalConfig::no_lints` |
-| The stack of the thread the host evaluates on, the room the demand fiber has, so a deep evaluation meets the call-depth error first | `api::MAIN_STACK` |
+| The stack the host evaluates on, the room the demand fiber has, so a deep evaluation meets the call-depth error first, reserved so it starts on a small machine | `api::on_main_stack`, `api::StackError`, `api::MAIN_STACK` |
 | Name the roots of an upload plan | `api::StorePath`: `parse`, `to_full_string`, `base_name` |
 | Plan the upload of what an evaluation made in memory, then upload it | `api::build::{plan, Plan, Dispatch, Options, Transport}` |
 | Root every path of a plan before it lands | `Plan::paths` |
@@ -51,6 +51,9 @@ A small function stands in where the type behind it would pin internals:
 - `api::build::answers`, in place of the worker protocol's `Connection` and
   the nix-grpc-store client. It opens the store as an upload would, and
   closes it again.
+- `api::on_main_stack`, in place of `parallel::fiber`'s stacks and switch.
+  It reserves the stack the command line evaluates on, so a host does not
+  map one of its own.
 
 `Evaluator` and `Session` are re-exported with no wrapper. A wrapper of
 `Evaluator` would make every `api` call that takes an evaluator take the
