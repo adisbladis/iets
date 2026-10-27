@@ -6,12 +6,17 @@ on:
   pull_request:
   merge_group:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     name: macos-latest
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
