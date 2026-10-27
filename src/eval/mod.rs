@@ -294,6 +294,10 @@ pub struct Evaluator {
     /// name, which answers like nix
     /// (docs/explanation/flakes-and-sources.md).
     project_root: Option<Vec<u8>>,
+    project_dir: Arc<OnceLock<Option<fs::File>>>,
+    /// Paths [`Evaluator::beneath_project`] proved, true when with the last
+    /// link followed.
+    beneath: SharedMap<Vec<u8>, bool>,
     /// The session this evaluator was made in: its settings and its log.
     /// A field, not a thread-local lookup, because the fan-out checks read
     /// it on the hot path (docs/reference/library.md).
@@ -640,6 +644,8 @@ impl EvalConfig {
             nix_eq: false,
             pure: self.pure,
             project_root: self.project_root,
+            project_dir: Default::default(),
+            beneath: Default::default(),
             session: self.session,
         };
         builtins::install(&mut ev);
@@ -669,6 +675,31 @@ impl Evaluator {
         // a root of "/" becomes "", so that every absolute path is below it
         let root: &[u8] = root.strip_suffix(b"/").unwrap_or(root);
         path.starts_with(root) && (path.len() == root.len() || path[root.len()] == b'/')
+    }
+
+    /// Whether the kernel shows that `path`, in the project by its text,
+    /// resolves inside it too (`sys::beneath`).
+    pub fn beneath_project(&self, path: &[u8], follow: bool) -> bool {
+        let Some(root) = &self.project_root else {
+            return false;
+        };
+        if self.beneath.get(path).is_some_and(|full| full || !follow) {
+            return true;
+        }
+        let dir = self
+            .project_dir
+            .get_or_init(|| fs::File::open(sys::path_from_internal(root)).ok());
+        let root: &[u8] = root.strip_suffix(b"/").unwrap_or(root);
+        let rel = &path[root.len()..];
+        let rel = rel.strip_prefix(b"/").unwrap_or(rel);
+        let found = dir
+            .as_ref()
+            .and_then(|d| sys::beneath(d, &sys::path_from_internal(rel), follow));
+        // a missing entry may yet appear as a link
+        if found == Some(true) {
+            self.beneath.insert(path.to_vec(), follow);
+        }
+        found.is_some()
     }
 
     #[inline]

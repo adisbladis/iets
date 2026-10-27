@@ -1,3 +1,5 @@
+use std::fs::File;
+use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Condvar, Mutex};
 
@@ -40,4 +42,9 @@ pub unsafe fn prefault(_p: *mut u8, _len: usize) {}
 /// needed any more.
 pub unsafe fn discard(p: *mut u8, len: usize) {
     unsafe { vm::reset(p, len) };
+}
+
+/// Never proven here, so callers walk the path themselves.
+pub fn beneath(_root: &File, _rel: &Path, _follow: bool) -> Option<bool> {
+    None
 }

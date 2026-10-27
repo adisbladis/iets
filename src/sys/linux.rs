@@ -1,7 +1,10 @@
-use std::fs;
+use std::fs::{self, File};
+use std::path::Path;
 use std::sync::LazyLock;
 use std::sync::atomic::AtomicU32;
 
+use rustix::fs::{Mode, OFlags, ResolveFlags, openat2};
+use rustix::io::Errno;
 use rustix::mm::{Advice, madvise};
 use rustix::thread::futex;
 
@@ -61,6 +64,27 @@ pub unsafe fn prefault(p: *mut u8, len: usize) {
 /// needed any more.
 pub unsafe fn discard(p: *mut u8, len: usize) {
     let _ = unsafe { madvise(p.cast(), len, Advice::LinuxDontNeed) };
+}
+
+/// Whether resolving `rel` in `root` provably stays below it: `Some(true)`
+/// when it opened there, `Some(false)` when it stopped at a missing entry,
+/// which no read gets past either.
+pub fn beneath(root: &File, rel: &Path, follow: bool) -> Option<bool> {
+    let mut flags = OFlags::PATH | OFlags::CLOEXEC;
+    if !follow {
+        flags |= OFlags::NOFOLLOW;
+    }
+    let rel = if rel.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        rel
+    };
+    let how = ResolveFlags::BENEATH | ResolveFlags::NO_MAGICLINKS;
+    match openat2(root, rel, flags, Mode::empty(), how) {
+        Ok(_) => Some(true),
+        Err(Errno::NOENT | Errno::NOTDIR) => Some(false),
+        Err(_) => None,
+    }
 }
 
 #[cfg(test)]
