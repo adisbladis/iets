@@ -52,7 +52,7 @@ prints cover every worker.
 | `IETS_NIX_BIN_DIR` | `nix-bin-dir` | path | unset | Where the real Nix binaries live. Unset: the first one on `PATH` that is not iets, where an iets classic mode command stands for the Nix it was built with (`docs/reference/classic.md`, **Fallback rules**). |
 | `IETS_NO_FALLBACK` | `no-fallback` | Boolean | off | A classic command fails instead of running the real Nix (`docs/reference/classic.md`). |
 | `IETS_FETCHING` | | set = on | off | Set on the Nix subprocess that fetches a flake input, so a recursive fetch is an error. |
-| `IETS_OFFLINE` | | set = on | off | Any download is an error. A flake whose inputs the input store already holds still evaluates. |
+| `IETS_OFFLINE` | | set = on | off | Any download is an error with code `offline` (`docs/reference/errors.md`). A flake whose inputs the input store already holds still evaluates. |
 | `IETS_COMPLETE_MS` | | u64 (ms) | 5000 | How long a completion that evaluates (`FLAKEREF#fragment`, `-A`) may take before it gives no candidates. `0` waits. A value that is not a number keeps the default. |
 | `IETS_PROGRESS` | | Boolean | on | The status line on a terminal and the `⏵` lines on a pipe (`docs/reference/commands.md`). Off draws neither, so stderr does not depend on how long a run takes. The log lines and the `internal-json` records stay. |
 | `IETS_SESSION_ID` | | string | a new UUIDv7 | The `sid` of every JSON log record (`docs/reference/errors.md`). `eval-jobs` sets it on its workers. A settings error carries it too. |
