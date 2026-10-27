@@ -188,7 +188,7 @@ pub fn flake_ref(f: &str, cwd: &[u8]) -> error::Result<flake::FlakeRef> {
 /// the store paths inside the messages name the local file the source was
 /// copied from, when one is known (docs/explanation/provenance.md).
 pub fn report_of(ev: &Evaluator, e: &Error) -> log::Report {
-    let _entered = ev.enter();
+    let _entered = ev.session().enter();
     let at = |pos: Pos| describe_pos(ev, pos).unwrap_or_else(|| ev.describe_pos(pos));
     ev.lints.flush();
     // a lint message resolves its own paths (lint::Evaluator::lint_shown_path)
@@ -208,7 +208,7 @@ pub fn report_of(ev: &Evaluator, e: &Error) -> log::Report {
 
 /// The same report, sent to the session's log, with the exit code.
 pub fn report(ev: &Evaluator, e: &Error) -> i32 {
-    let _entered = ev.enter();
+    let _entered = ev.session().enter();
     report_of(ev, e).emit()
 }
 

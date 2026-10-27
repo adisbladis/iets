@@ -10,8 +10,12 @@
 //!
 //! A heap can count its bytes into a `MemoryGroup`, whose `MemoryHost` is
 //! asked before each new mapping whether the group may grow.
+//!
+//! A session whose memory runs out is exhausted: a mapping that fails takes
+//! the process's reserve instead, and the session fails from its next call
+//! on, so the process goes on (docs/explanation/out-of-memory.md).
 
-use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::{mem, process, ptr, slice};
 
@@ -20,6 +24,22 @@ use crate::sys::vm;
 
 /// Name bytes come from blocks of this size; a longer name gets its own.
 const NAME_BLOCK: usize = 1 << 20;
+
+/// What carries a session that ran out of memory to its next call: one
+/// arena chunk and two name blocks, mapped before they are needed.
+const RESERVE: usize = (32 << 20) + 2 * NAME_BLOCK;
+
+/// The reserve's unused range: base and length, zero when it is spent.
+static RESERVED: Mutex<(usize, usize)> = Mutex::new((0, 0));
+
+/// Why a session can go no further.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Exhausted {
+    /// A mapping failed, after the host was asked to release memory.
+    Memory,
+    /// An evaluator of the session interned close to `MAX_SYMS` names.
+    Symbols,
+}
 
 /// What a released session does with its memory.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -42,7 +62,7 @@ pub trait MemoryHost: Send + Sync {
     fn allow(&self, total: usize) -> bool;
 
     /// Called when a mapping fails, before iets tries once more. If that
-    /// fails too, the process exits with `out of memory`.
+    /// fails too, the session is exhausted (`Heap::exhausted`).
     fn release(&self) {}
 }
 
@@ -69,6 +89,8 @@ impl MemoryGroup {
 #[derive(Default)]
 pub struct Heap {
     inner: Mutex<Inner>,
+    /// 0, or 1 + the `Exhausted` reason that came first.
+    exhausted: AtomicU8,
 }
 
 #[derive(Default)]
@@ -113,22 +135,50 @@ impl Heap {
         group.is_none_or(|g| g.host.allow(g.bytes().saturating_add(extra)))
     }
 
-    /// Maps `len` bytes, retrying once after `MemoryHost::release`.
+    /// Maps `len` bytes, retrying once after `MemoryHost::release`. When
+    /// that fails too, the session is exhausted and the bytes come from the
+    /// reserve, which carries it to its next call.
     pub(crate) fn map(&self, len: usize) -> usize {
         if let Some(p) = try_map(len) {
+            arm_reserve();
             return p;
         }
         let group = self.inner.lock().unwrap().group.clone();
         if let Some(g) = group {
             g.host.release();
         }
-        let Some(p) = try_map(len) else {
+        if let Some(p) = try_map(len) {
+            arm_reserve();
+            return p;
+        }
+        self.exhaust(Exhausted::Memory);
+        let Some(p) = take_reserve(len) else {
             // no unwinding: other fibers hold arena pointers, and Nix ends
             // the same way on a heap it cannot grow
             errln!("error: out of memory");
             process::exit(1);
         };
         p
+    }
+
+    /// Marks the session as unable to go on. Every evaluation in it fails
+    /// from its next call on; the first reason stays.
+    pub(crate) fn exhaust(&self, why: Exhausted) {
+        let code = 1 + why as u8;
+        let _ = self
+            .exhausted
+            .compare_exchange(0, code, Ordering::Relaxed, Ordering::Relaxed);
+    }
+
+    /// Why the session can go no further, if it can't. A host releases
+    /// such a session: every evaluation in it fails with
+    /// `ErrorKind::Exhausted` (docs/reference/library.md).
+    pub fn exhausted(&self) -> Option<Exhausted> {
+        match self.exhausted.load(Ordering::Relaxed) {
+            0 => None,
+            1 => Some(Exhausted::Memory),
+            _ => Some(Exhausted::Symbols),
+        }
     }
 
     /// Bytes mapped for this session so far: arena chunks and name blocks.
@@ -202,10 +252,39 @@ impl Heap {
 /// An anonymous mapping of `len` bytes, or `None` when there is no memory.
 fn try_map(len: usize) -> Option<usize> {
     #[cfg(test)]
-    if tests::FAIL_NEXT_MAP.with(|f| f.replace(false)) {
+    if tests::FAIL_MAPS.with(|f| f.replace(f.get().saturating_sub(1))) > 0 {
         return None;
     }
     vm::map(len, false).ok().map(|p| p as usize)
+}
+
+/// Maps the reserve again when it was spent, in whole or in part. A mapping
+/// that fails leaves it as it is, and the next one that works tries again.
+fn arm_reserve() {
+    let mut r = RESERVED.lock().unwrap_or_else(|e| e.into_inner());
+    if r.1 == RESERVE {
+        return;
+    }
+    let Ok(p) = vm::map(RESERVE, false) else {
+        return;
+    };
+    if r.1 > 0 {
+        // SAFETY: the unspent rest of the reserve is a mapping nothing holds.
+        unsafe { vm::unmap(r.0 as *mut u8, r.1) };
+    }
+    *r = (p as usize, RESERVE);
+}
+
+/// `len` bytes of the reserve, which the caller adopts as a mapping of its
+/// own, or `None` when less is left.
+fn take_reserve(len: usize) -> Option<usize> {
+    let mut r = RESERVED.lock().unwrap_or_else(|e| e.into_inner());
+    if r.1 < len {
+        return None;
+    }
+    let p = r.0;
+    *r = (r.0 + len, r.1 - len);
+    Some(p)
 }
 
 impl Drop for Heap {
@@ -291,10 +370,24 @@ pub(crate) mod tests {
     use std::cell::Cell;
 
     thread_local! {
-        /// Makes this thread's next `try_map` fail.
-        pub(crate) static FAIL_NEXT_MAP: Cell<bool> = const { Cell::new(false) };
+        /// How many of this thread's next `try_map`s fail.
+        pub(crate) static FAIL_MAPS: Cell<u32> = const { Cell::new(0) };
         /// Bytes this thread's dropped heaps unmapped.
         pub(crate) static UNMAPPED: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// Held by a test that spends the reserve, which the whole process
+    /// shares: the reserve is whole while it is held.
+    pub(crate) fn spending_the_reserve() -> std::sync::MutexGuard<'static, ()> {
+        static ONE: Mutex<()> = Mutex::new(());
+        let one = ONE.lock().unwrap_or_else(|e| e.into_inner());
+        arm_reserve();
+        assert_eq!(reserve_left(), RESERVE);
+        one
+    }
+
+    pub(crate) fn reserve_left() -> usize {
+        RESERVED.lock().unwrap().1
     }
 
     #[test]
@@ -372,9 +465,37 @@ pub(crate) mod tests {
         let (g, released) = limit(usize::MAX);
         let h = Heap::default();
         h.join(&g);
-        FAIL_NEXT_MAP.with(|f| f.set(true));
+        FAIL_MAPS.with(|f| f.set(1));
         let p = h.alloc_bytes(b"outPath");
         assert_eq!(p, b"outPath");
         assert_eq!(released.load(Ordering::Relaxed), 1);
+        assert_eq!(h.exhausted(), None);
+    }
+
+    /// A mapping that fails after the host's release takes the reserve and
+    /// exhausts the heap, and the process goes on; the next mapping that
+    /// works makes the reserve whole again.
+    #[test]
+    fn a_mapping_that_fails_twice_takes_the_reserve() {
+        let _reserve = spending_the_reserve();
+        let base = RESERVED.lock().unwrap().0;
+        let (g, released) = limit(usize::MAX);
+        let h = Heap::default();
+        h.join(&g);
+        FAIL_MAPS.with(|f| f.set(2));
+        let p = h.alloc_bytes(b"outPath");
+        assert_eq!((p, p.as_ptr() as usize), (&b"outPath"[..], base));
+        assert_eq!(released.load(Ordering::Relaxed), 1);
+        assert_eq!(h.exhausted(), Some(Exhausted::Memory));
+        h.exhaust(Exhausted::Symbols);
+        assert_eq!(
+            h.exhausted(),
+            Some(Exhausted::Memory),
+            "the first reason stays"
+        );
+        Heap::default().alloc(8);
+        assert_eq!(reserve_left(), RESERVE);
+        drop(h);
+        assert!(is_released(base));
     }
 }

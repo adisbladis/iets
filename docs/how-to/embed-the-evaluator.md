@@ -27,8 +27,10 @@ let _entered = session.enter();         // for this thread
 let mut ev = iets::eval::Evaluator::new();   // adopts the session
 ```
 
-The library never writes to stdout or stderr on its own, and never exits.
-It returns errors and your program picks the exit code. A thread you start
+The library never writes to stdout or stderr on its own. It returns errors
+and your program picks the exit code, even when a session runs out of
+memory ([Using iets as a library](../reference/library.md#running-out-of-memory)
+has the limits). A thread you start
 yourself needs `Session::enter` or `session::bind(f)`
 ([Using iets as a library](../reference/library.md#what-the-host-owns)).
 
