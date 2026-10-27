@@ -432,11 +432,7 @@ fn pinned_path(p: &flakeref::Parsed) -> Option<(&str, &str)> {
 
 /// An error outside the evaluator as an evaluation error at `pos`.
 pub(crate) fn eval_error(e: Error, pos: Pos) -> Box<EvalError> {
-    let kind = match e {
-        Error::Unsupported(_) => ErrorKind::Unsupported,
-        _ => ErrorKind::Eval,
-    };
-    EvalError::boxed(kind, e.to_string(), pos)
+    EvalError::boxed(e.eval_kind(ErrorKind::Eval), e.to_string(), pos)
 }
 
 /// Evaluates the flake and selects `attr` from its outputs (or returns the
