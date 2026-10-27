@@ -9,7 +9,7 @@ use std::str::from_utf8;
 use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
-use crate::runtime::heap::Heap;
+use crate::runtime::heap::{Exhausted, Heap};
 use crate::session::Session;
 use crate::syntax::symbol::{FxHasher, Sym};
 use crate::sys::vm;
@@ -51,6 +51,12 @@ type MixBuild = BuildHasherDefault<MixHasher>;
 /// of `MAX_SYMS` words, so a larger cap costs address space and nothing
 /// else until the names exist. `Sym` is a `u32`, which is the real bound.
 pub const MAX_SYMS: usize = 1 << 30;
+
+/// Past this many names the session is exhausted and fails from its next
+/// call on. The ids left below `MAX_SYMS` carry it there: an evaluation
+/// that interns 2^24 names makes far more than one arena chunk of objects,
+/// and a new chunk is where the arena sees that its session is exhausted.
+pub const SOFT_SYMS: usize = MAX_SYMS - (1 << 24);
 
 /// Hash for the shard and for the per-handle cache, which read the high
 /// bits FxHash fills well. No mix here: it would run on every intern, and
@@ -209,11 +215,14 @@ impl Interner {
         }
         let leaked = self.shared.heap.alloc_bytes(name);
         let id = self.shared.next.fetch_add(1, Ordering::Relaxed);
-        if (id as usize) >= MAX_SYMS {
-            // no way back from here: the id is already handed out, and the
-            // caller's signature cannot fail
-            errln!("error: too many symbols (more than {MAX_SYMS})");
-            process::exit(1);
+        if (id as usize) >= SOFT_SYMS {
+            self.shared.heap.exhaust(Exhausted::Symbols);
+            if (id as usize) >= MAX_SYMS {
+                // no way back from here: the id is already handed out, and
+                // the caller's signature cannot fail
+                errln!("error: too many symbols (more than {MAX_SYMS})");
+                process::exit(1);
+            }
         }
         let entry = self.shared.heap.alloc(size_of::<&[u8]>()) as *mut &'static [u8];
         // SAFETY: fresh, aligned and sized for one slice reference.
@@ -263,6 +272,14 @@ impl Interner {
 
     pub fn len(&self) -> usize {
         self.shared.next.load(Ordering::Relaxed) as usize
+    }
+
+    /// Makes `id` the next symbol's, as if every name below it existed. The
+    /// ids skipped have no name, so only a test that reads none of them
+    /// uses this.
+    #[cfg(test)]
+    pub(crate) fn skip_to_for_test(&self, id: usize) {
+        self.shared.next.store(id as u32, Ordering::Relaxed);
     }
 
     pub fn is_empty(&self) -> bool {

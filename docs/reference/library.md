@@ -25,6 +25,7 @@ because a word made up from bits would let a safe call read any address.
 | The state a run owns | `session::Session::new()`, `Session::enter()`, `Evaluator::enter()` ("What the host owns") |
 | The memory a session holds | `Session::heap`: `bytes()`, `set_release(Release)`, `join(&MemoryGroup)` ("Sessions and memory") |
 | Bound several sessions together | `runtime::heap::{MemoryGroup, MemoryHost}` ("Bounding memory") |
+| A session that ran out of memory or symbols | `Heap::exhausted() -> Option<Exhausted>`, `ErrorKind::Exhausted` ("Running out of memory") |
 | Environment settings | `Session::settings()`, `Session::load_settings(&opts)` (docs/reference/settings.md) |
 | Where messages go | `Session::log.write_to(Box<dyn Write + Send>)`, `write_to_stderr()` |
 | Arguments of one evaluation | `api::EvalArgs` (`EvalArgs::new()` for the defaults) |
@@ -58,10 +59,11 @@ the tree store, the nix.conf it read, the eval-jobs walk, and the hash
 mismatches a build reported. Two sessions in one process share none of it,
 so you can run two evaluators side by side.
 
-The library never writes to stdout or stderr by itself, and never exits. A
-session's log starts with nowhere to go, `iets` calls
-`Session::log.write_to_stderr()`, and a host that renders its own errors
-uses `api::report_of` and leaves the log unset.
+The library never writes to stdout or stderr by itself. It ends the process
+only for a value used after its session ("Sessions and memory") and past the
+limits of "Running out of memory". A session's log starts with nowhere to
+go, `iets` calls `Session::log.write_to_stderr()`, and a host that renders
+its own errors uses `api::report_of` and leaves the log unset.
 
 An `Evaluator` keeps a handle to its session (`ev.session()`). Other code
 calls `Session::current()`, the session this thread entered:
@@ -186,13 +188,39 @@ block a session of the group maps, with the group's total in bytes:
 | Call | When | What the answer does |
 |:---|:---|:---|
 | `allow(total)` | before every new chunk, on the evaluating thread, with no lock held | `false` fails the evaluation at its next function call with `ErrorKind::Budget`, which `tryEval` does not catch. The chunk is still mapped, so a group can pass the limit by one chunk per worker. |
-| `release()` | after a mapping failed | Free what you can. iets maps once more, then stops the process with `error: out of memory`. |
+| `release()` | after a mapping failed | Free what you can. iets maps once more; when that fails too, the session is exhausted ("Running out of memory"). |
 
 A refusal leaves the session usable: the next function call asks `allow`
 again, and the evaluation goes on once it answers `true`.
 `builtins.genList` asks before it allocates, since it makes no call while it
 fills the list. A released session's bytes leave `group.bytes()`. A session
 in no group is never limited.
+
+### Running out of memory
+
+A session whose mapping fails after `release()`, in a group or not, is
+exhausted, and so is one whose evaluator interned
+`parallel::interner::SOFT_SYMS` names. The process goes on:
+
+- `session.heap.exhausted()` says why: `Some(Exhausted::Memory)` or
+  `Some(Exhausted::Symbols)`.
+- The evaluation that ran out fails at its next function call with
+  `ErrorKind::Exhausted`, which `tryEval` does not catch. So does every
+  evaluation in the session after it that comes in through `api`,
+  `api::value` or `Evaluator::enter`: release the session and make a new
+  one.
+- The failed mapping's bytes come from a reserve the process mapped while
+  memory was there: one arena chunk and two name blocks, 34 MiB. The next
+  mapping that works fills the reserve again.
+
+The process still stops, with `error: out of memory`, when a mapping fails
+and the reserve has too little left: a single allocation larger than an
+arena chunk, a second session that runs out before a mapping fills the
+reserve again, or an evaluation that needs more than the reserve before its
+next call. It stops with `error: too many symbols` at `MAX_SYMS` names.
+A host that must survive those bounds its group well below what the
+machine can map, or runs the evaluator in a process of its own:
+`docs/explanation/out-of-memory.md` has why.
 
 ## The value API
 

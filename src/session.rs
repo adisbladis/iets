@@ -261,8 +261,9 @@ mod tests {
 
     use crate::api::{self, EvalArgs, Input};
     use crate::eval::{ErrorKind, EvalConfig, Evaluator, Pos};
+    use crate::parallel::interner::SOFT_SYMS;
     use crate::runtime::Word;
-    use crate::runtime::heap::{MemoryGroup, MemoryHost, Release, is_released};
+    use crate::runtime::heap::{self, Exhausted, MemoryGroup, MemoryHost, Release, is_released};
     use crate::sink::Sink;
     use crate::{parallel, print};
     use std::env;
@@ -478,6 +479,41 @@ mod tests {
         })
         .expect("runs");
         assert_eq!(kind, Some(ErrorKind::Budget));
+    }
+
+    /// A mapping that fails after the host's release exhausts the session:
+    /// its evaluation fails at its next call, its next evaluation fails at
+    /// once, and the process and a new session go on.
+    #[test]
+    fn a_session_out_of_memory_fails_and_the_process_goes_on() {
+        let _reserve = heap::tests::spending_the_reserve();
+        let s = Session::new();
+        let mut ev = EvalConfig::new().session(s.clone()).build();
+        // each step copies the list and is a call
+        let grow = "builtins.length (builtins.foldl' (acc: i: acc ++ [ i ]) [ ] (builtins.genList (x: x) 20000))";
+        heap::tests::FAIL_MAPS.with(|f| f.set(2));
+        assert_eq!(evaluate(&mut ev, grow).err(), Some(ErrorKind::Exhausted));
+        assert_eq!(s.heap.exhausted(), Some(Exhausted::Memory));
+        let next = evaluate(&mut ev, "(x: x + 1) 1").err();
+        assert_eq!(next, Some(ErrorKind::Exhausted));
+        drop(ev);
+        drop(s);
+        let (mut ev, w) = eval_in(&Session::new(), "(x: x + 1) 1");
+        assert_eq!(json(&mut ev, w), "2");
+    }
+
+    /// Past `SOFT_SYMS` names the session is exhausted, and its next
+    /// evaluation fails at its first call.
+    #[test]
+    fn a_session_past_the_symbol_limit_fails() {
+        let s = Session::new();
+        let mut ev = EvalConfig::new().session(s.clone()).build();
+        ev.interner.skip_to_for_test(SOFT_SYMS - 3);
+        let names = r#"builtins.attrNames (builtins.listToAttrs (map (i: { name = "n${toString i}"; value = i; }) (builtins.genList (x: x) 10)))"#;
+        let _ = evaluate(&mut ev, names);
+        assert_eq!(s.heap.exhausted(), Some(Exhausted::Symbols));
+        let next = evaluate(&mut ev, "(x: x + 1) 1").err();
+        assert_eq!(next, Some(ErrorKind::Exhausted));
     }
 
     #[test]
