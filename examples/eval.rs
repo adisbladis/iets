@@ -12,7 +12,7 @@ use std::process::{self, ExitCode};
 
 fn main() -> ExitCode {
     // a frontend owns the run state and says where messages go
-    let session = iets::session::Session::new();
+    let session = iets::api::Session::new();
     session.log.write_to_stderr();
     let _entered = session.enter();
     let mut a = EvalArgs {
