@@ -35,6 +35,8 @@ pub enum Error {
     Usage(String),
     /// A download that `IETS_OFFLINE` refused (`ErrorKind::Offline`).
     Offline(String),
+    /// Work on a store that the host cancelled (`session::Cancel`).
+    Cancelled,
     /// nix.conf: a syntax error, a missing include, or a bad setting value.
     Config(String),
     /// Another error and the fix for it, which the record shows as `hint`.
@@ -73,6 +75,7 @@ impl Error {
             Error::Eval(e) => e.kind.code(),
             Error::Usage(_) => "usage",
             Error::Offline(_) => "offline",
+            Error::Cancelled => "cancelled",
             Error::Config(_) => "config",
             Error::Hint(e, _) => e.code(),
         }
@@ -125,6 +128,7 @@ impl fmt::Display for Error {
                 f,
                 "cannot plan '{p}': it is neither a derivation nor a path this evaluation added to the store"
             ),
+            Error::Cancelled => f.write_str("cancelled"),
             Error::Eval(e) => f.write_str(&e.msg),
             Error::Hint(e, _) => e.fmt(f),
         }
