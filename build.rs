@@ -22,14 +22,18 @@ fn hash_tree(h: &mut Sha256, dir: &Path) {
 }
 
 fn main() -> Result<(), Box<dyn error::Error>> {
-    let fds = protox::compile(["nix_remote.proto"], ["proto"])?;
-    tonic_prost_build::configure()
-        .build_server(false)
-        .build_client(true)
-        // The service has its own `Connect` RPC (the worker-protocol tunnel),
-        // whose generated method would clash with the transport constructor.
-        .build_transport(false)
-        .compile_fds(fds)?;
+    // the grpc:// client's messages (src/remote/grpc)
+    #[cfg(feature = "grpc")]
+    {
+        let fds = protox::compile(["nix_remote.proto"], ["proto"])?;
+        tonic_prost_build::configure()
+            .build_server(false)
+            .build_client(true)
+            // The service has its own `Connect` RPC (the worker-protocol tunnel),
+            // whose generated method would clash with the transport constructor.
+            .build_transport(false)
+            .compile_fds(fds)?;
+    }
 
     for p in ["src", "proto", "Cargo.lock", "build.rs"] {
         println!("cargo:rerun-if-changed={p}");

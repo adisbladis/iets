@@ -1,6 +1,7 @@
 //! tests/lang/eval-okay-*.nix and eval-fail-*.nix, run from tests/ like Nix's
 //! own harness. `--impure` because the corpus is Nix's: cases read
 //! `/proc/version`, use `storePath` and the search path.
+#![cfg(feature = "cli")]
 
 mod hermetic;
 

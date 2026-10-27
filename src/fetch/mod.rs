@@ -8,16 +8,58 @@
 //! A `file://` URL is no download. [`get_or_read`] reads it, for a URL the
 //! user named, as libcurl does for the `tarball` inputs `nix flake lock`
 //! writes with that scheme. Nothing holds a body whole: the caller's thread
-//! reads it through the decompressor into a sink.
+//! reads it through the decompressor into a sink. The HTTP client is the
+//! `http` feature's, and a build without it downloads nothing.
 
 pub mod git;
+#[cfg(feature = "http")]
 mod http;
 pub mod lfs;
+#[cfg(any(feature = "http", feature = "grpc"))]
 pub mod roots;
 pub mod spool;
 pub mod unpack;
 
 pub use http::Kept;
+
+/// The stand-in for the HTTP client in a build without it: every download is
+/// refused, as `IETS_OFFLINE` refuses it.
+#[cfg(not(feature = "http"))]
+mod http {
+    use std::io::Read;
+
+    use crate::error::{Error, Result};
+
+    pub(super) fn request(
+        url: &str,
+        _: &[(String, String)],
+        _: Option<Vec<u8>>,
+        _: super::Limits,
+        _: impl FnOnce(Box<dyn Read>) -> Result<u64>,
+    ) -> Result<u64> {
+        Err(Error::Offline(format!(
+            "cannot fetch '{}': iets is built without the http feature",
+            super::shown(url)
+        )))
+    }
+
+    /// No connection to keep: each GET is [`super::get_or_read`]'s, which
+    /// reads a `file:` URL and refuses any other.
+    pub struct Kept;
+
+    impl Kept {
+        pub fn new() -> Result<Kept> {
+            Ok(Kept)
+        }
+
+        /// The body of `url`.
+        pub fn get(&mut self, url: &str, limits: super::Limits) -> Result<Vec<u8>> {
+            let mut body = Vec::new();
+            super::get_or_read(url, &[], limits, false, &mut body)?;
+            Ok(body)
+        }
+    }
+}
 
 use std::cell::Cell;
 use std::fs::File;
@@ -542,6 +584,14 @@ pub(crate) mod tests {
         }
     }
 
+    /// How [`get`] refuses a `file:` URL: the HTTP client names its scheme,
+    /// and a build without the client refuses every URL.
+    pub(crate) const REFUSED: &str = if cfg!(feature = "http") {
+        "unsupported scheme 'file'"
+    } else {
+        "built without the http feature"
+    };
+
     fn file_url(d: &Path, name: &str, bytes: &[u8]) -> String {
         let f = d.join(name);
         fs::write(&f, bytes).unwrap();
@@ -554,10 +604,20 @@ pub(crate) mod tests {
         let d = tempdir().unwrap();
         let url = file_url(d.path(), "f", b"local");
         let e = get(&url, &[], limits(), false, &mut Vec::new()).unwrap_err();
-        assert!(e.to_string().contains("unsupported scheme 'file'"), "{e}");
+        assert!(e.to_string().contains(REFUSED), "{e}");
         let mut out = Vec::new();
         get_or_read(&url, &[], limits(), false, &mut out).unwrap();
         assert_eq!(out, b"local");
+    }
+
+    /// A binary cache on this machine is read through [`Kept`] as
+    /// [`get_or_read`] reads it, with the HTTP client or without it.
+    #[test]
+    fn a_kept_connection_reads_a_file_url() {
+        let d = tempdir().unwrap();
+        let url = file_url(d.path(), "x.narinfo", b"StorePath: x\n");
+        let mut kept = Kept::new().unwrap();
+        assert_eq!(kept.get(&url, limits()).unwrap(), b"StorePath: x\n");
     }
 
     #[test]

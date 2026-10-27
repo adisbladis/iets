@@ -1102,11 +1102,11 @@ impl Evaluator {
 
 #[cfg(test)]
 mod cases;
-#[cfg(test)]
+#[cfg(all(test, feature = "cli"))]
 mod cli_cases;
 #[cfg(test)]
 mod fixtures;
-#[cfg(test)]
+#[cfg(all(test, feature = "cli"))]
 mod flake_cases;
 
 #[cfg(test)]

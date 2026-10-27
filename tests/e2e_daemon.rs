@@ -1,7 +1,7 @@
 //! `iets build` against a Nix daemon: `--builder daemon`, `unix://` and
 //! `ssh-ng://`, a cold and a warm builder store, an output as an input
 //! source, and substitution from a binary cache.
-#![cfg(unix)]
+#![cfg(all(unix, feature = "cli"))]
 
 mod e2e;
 mod hermetic;

@@ -5,6 +5,7 @@
 //! (the binary). `IETS_TEST_NIXPKGS_LIMIT` takes the first N attributes.
 //! `IETS_TEST_NIXPKGS_NIX`, the output of that binary on the whole of
 //! nixpkgs, replaces its run.
+#![cfg(feature = "cli")]
 
 mod hermetic;
 

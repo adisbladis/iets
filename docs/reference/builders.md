@@ -193,7 +193,9 @@ line with the round trips.
 [nix-grpc-store](https://github.com/Mic92/nix-grpc-store) is a gRPC
 service in front of a Nix store. iets speaks it directly, so
 `--builder grpc://…` and `--store grpc://…` need no nix, no plugin and no
-local store.
+local store. The client is the library's `grpc` feature, which the `iets`
+binary always has; a library built without it parses the URL and fails to
+open the store with `unsupported` (`docs/reference/library.md`).
 
 ### URL parameters
 

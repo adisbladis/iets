@@ -13,6 +13,7 @@ pub mod build;
 pub mod builtins;
 pub mod bytescan;
 pub mod cachefs;
+#[cfg(feature = "cli")]
 pub mod cli;
 pub mod compile;
 pub mod config;

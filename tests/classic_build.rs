@@ -1,6 +1,6 @@
 //! Classic mode commands that build, against the real Nix: out-links, roots, the
 //! log records of a build and its failures.
-#![cfg(unix)]
+#![cfg(all(unix, feature = "cli"))]
 
 mod e2e;
 mod hermetic;

@@ -4,7 +4,7 @@
 //!
 //! Needs `IETS_TEST_NIX_EVAL_JOBS`. The cases that import nixpkgs also need
 //! `IETS_TEST_NIXPKGS`.
-#![cfg(unix)]
+#![cfg(all(unix, feature = "cli"))]
 
 mod e2e;
 mod hermetic;

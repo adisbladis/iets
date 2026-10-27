@@ -1,5 +1,6 @@
 //! `builtins.fetchClosure` from a `file://` binary cache made here, with the
 //! messages of Nix 2.34.8.
+#![cfg(feature = "cli")]
 
 mod hermetic;
 

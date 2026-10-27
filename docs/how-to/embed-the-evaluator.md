@@ -10,6 +10,17 @@ the library and calls its entry points, which
 [Using iets as a library](../reference/library.md) lists. Nothing is
 process-global, so evaluators can run side by side in one process.
 
+Turn the default features off, so the command line and the transports you
+do not use stay out of your build:
+
+```toml
+[dependencies]
+iets = { version = "0.2", default-features = false, features = ["http"] }
+```
+
+`http` downloads, and `grpc` opens a `grpc://` store. The worker protocol
+needs neither ([Features](../reference/library.md#features)).
+
 Keep your frontend out of evaluator internals: no `cli` module, no private
 field, no copied helper. If you need something that lives only in `cli`, move
 it into `crate::api` and let `cli` call it there.

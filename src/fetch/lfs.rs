@@ -436,7 +436,7 @@ mod tests {
             },
         )
         .unwrap_err();
-        assert!(e.contains("unsupported scheme 'file'"), "{e}");
+        assert!(e.contains(crate::fetch::tests::REFUSED), "{e}");
     }
 
     #[test]

@@ -1,5 +1,6 @@
 //! The `⏵` line a pipe gets for a task of 5 s or more. The hermetic
 //! environment turns progress off, so this test turns it back on.
+#![cfg(feature = "cli")]
 
 mod hermetic;
 
