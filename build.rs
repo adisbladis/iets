@@ -35,15 +35,16 @@ fn main() -> Result<(), Box<dyn error::Error>> {
             .compile_fds(fds)?;
     }
 
-    for p in ["src", "proto", "Cargo.lock", "build.rs"] {
+    // The id hashes the files every copy of a commit holds as written. A
+    // vendored copy may have no Cargo.lock, which rerun-if-changed reads as
+    // changed on every build, and `cargo vendor` rewrites Cargo.toml.
+    for p in ["src", "proto", "build.rs"] {
         println!("cargo:rerun-if-changed={p}");
     }
     let mut h = Sha256::new();
     hash_tree(&mut h, Path::new("src"));
     hash_tree(&mut h, Path::new("proto"));
-    for f in ["Cargo.lock", "build.rs"] {
-        h.update(fs::read(f).unwrap_or_default());
-    }
+    h.update(fs::read("build.rs").unwrap_or_default());
     let id: String = h.finalize().iter().map(|b| format!("{b:02x}")).collect();
     println!("cargo:rustc-env=IETS_BUILD_ID={id}");
     let version = env::var("CARGO_PKG_VERSION")?;

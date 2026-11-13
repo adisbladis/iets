@@ -117,8 +117,8 @@ Only `import` uses it. `scopedImport`, `-E` and a file with a `~/` path
 literal compile from source, and small files (`IETS_IR_MIN`) aren't cached, because
 the load costs what the compile costs.
 
-The key holds the build id, so a new binary never reads an old entry. It
-also holds everything the compiler folds out of the evaluator's
+The key holds the build id, so a binary of other sources never reads an old
+entry. It also holds everything the compiler folds out of the evaluator's
 configuration, because a folded constant is stored by content: the system,
 the store directory, the compile-time lint levels, and `pure-eval`. Without
 `pure-eval` in the key, an impure run's entry would answer a pure run, and

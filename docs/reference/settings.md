@@ -57,8 +57,10 @@ prints cover every worker.
 | `IETS_SESSION_ID` | | string | a new UUIDv7 | The `sid` of every JSON log record (`docs/reference/errors.md`). `eval-jobs` sets it on its workers. A settings error carries it too. |
 | | `fix-hashes` | `ask`, `always`, `never` | `ask` | See **fix-hashes**. |
 
-`IETS_BUILD_ID` is not a setting. It is fixed when iets is built, and it
-ties the caches to the binary. `ARCHITECTURE.md`, under "Benchmarks", lists the
+`IETS_BUILD_ID` is not a setting. It is fixed when iets is built, as the
+hash of `src`, `proto` and `build.rs`, and it ties the caches to those
+sources. A dependency update that changes none of them keeps it.
+`ARCHITECTURE.md`, under "Benchmarks", lists the
 benchmark scripts that read the statistics knobs.
 
 ### fix-hashes
